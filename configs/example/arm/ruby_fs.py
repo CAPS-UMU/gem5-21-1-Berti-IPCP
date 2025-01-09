@@ -47,13 +47,15 @@ from common import ObjectList
 from common import Options
 from common import SysPaths
 from common.cores.arm import HPI
+from common.cores.arm import Alderlake
 from ruby import Ruby
 
 import devices
 
 
 default_kernel = 'vmlinux.arm64'
-default_disk = 'linaro-minimal-aarch64.img'
+#default_disk = 'linaro-minimal-aarch64.img'
+default_disk= 'aarch64-ubuntu-trusty-headless.img'
 default_root_device = '/dev/vda1'
 
 
@@ -68,7 +70,9 @@ cpu_types = {
                devices.L2),
     "hpi" : ( HPI.HPI,
               HPI.HPI_ICache, HPI.HPI_DCache,
-              HPI.HPI_L2)
+              HPI.HPI_L2),
+    "alderlake" : ( Alderlake.Alderlake_CPU,
+                    None, None, None)
 }
 
 def create_cow_image(name):
@@ -209,7 +213,7 @@ def main():
     parser.add_argument("--script", type=str, default="",
                         help = "Linux bootscript")
     parser.add_argument("--cpu", choices=list(cpu_types.keys()),
-                        default="minor",
+                        default="alderlake",
                         help="CPU model to use")
     parser.add_argument("--cpu-freq", type=str, default="4GHz")
     parser.add_argument("-n", "--num-cpus", type=int, default=1)
