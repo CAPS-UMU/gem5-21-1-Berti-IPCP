@@ -835,7 +835,12 @@ RubyPrefetcherStats::RubyPrefetcherStats(statistics::Group *parent)
       ADD_STAT(no_found_berti, "Addresses not found in Berti"),
       ADD_STAT(found_berti, "Addresses not found in Berti"),
       ADD_STAT(average_issued, "Issued (to compute average)"),
-      ADD_STAT(average_num, "Num (to compute average) ")
+      ADD_STAT(average_num, "Num (to compute average) "),
+      ADD_STAT(total_misses, "Cache Misses seen by Berti"),
+      ADD_STAT(total_hits, "Cache Hits seen by Berti"),
+      ADD_STAT(pf_hits, "Cache hits to lines prefetched by Berti"),
+      ADD_STAT(late_pf, "Cache misses to lines prefetched by Berti"),
+      ADD_STAT(total_acceses, "Total calls to observeXX in Berti")
 {
 //  auto average = ((1.0*average_issued)/average_num);
 //  ADD_STAT(average, "Average issued");
@@ -848,6 +853,7 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
   uint64_t line_addr = (((uint64_t)addr) >> RubySystem::getBlockSizeBits());
 
   if (line_addr == 0) return;
+  rubyPrefetcherStats.total_acceses++;
 
   uint64_t ip_hash = berti->ip_hash(ip) & ip_mask;
 
@@ -979,6 +985,12 @@ void
 RubyPrefetcher::observeMiss(Addr address, const RubyRequestType& type, Addr pc)
 {
     DPRINTF(RubyPrefetcher, "Observed miss for %#x\n", address);
+
+    uint64_t line_addr = (((uint64_t)address) >> RubySystem::getBlockSizeBits());
+    if (line_addr != 0) {
+      rubyPrefetcherStats.total_misses++;
+    }
+
     prefetcher_cache_operate(address,pc,false,false,type);
 }
 
@@ -986,6 +998,12 @@ void
 RubyPrefetcher::observeHit(Addr address, const RubyRequestType& type, Addr pc)
 {
     DPRINTF(RubyPrefetcher, "Observed hit for %#x\n", address);
+
+    uint64_t line_addr = (((uint64_t)address) >> RubySystem::getBlockSizeBits());
+    if (line_addr != 0) {
+      rubyPrefetcherStats.total_hits++;
+    }
+
     prefetcher_cache_operate(address,pc,true,false,type);
 }
 
@@ -993,6 +1011,13 @@ void
 RubyPrefetcher::observePfMiss(Addr address,const RubyRequestType& type, Addr pc)
 {
     DPRINTF(RubyPrefetcher, "Observed partial hit for %#x\n", address);
+
+
+    uint64_t line_addr = (((uint64_t)address) >> RubySystem::getBlockSizeBits());
+    if (line_addr != 0) {
+      rubyPrefetcherStats.late_pf++;
+    }
+
     prefetcher_cache_operate(address,pc,false,true,type);
 }
 
@@ -1000,6 +1025,12 @@ void
   RubyPrefetcher::observePfHit(Addr address, const RubyRequestType& type, Addr pc)
 {
     DPRINTF(RubyPrefetcher, "Observed hit for %#x\n", address);
+
+    uint64_t line_addr = (((uint64_t)address) >> RubySystem::getBlockSizeBits());
+    if (line_addr != 0) {
+      rubyPrefetcherStats.pf_hits++;
+    }
+
     prefetcher_cache_operate(address,pc,true,true,type);
 }
 

@@ -403,6 +403,12 @@ class RubyPrefetcher : public SimObject
 	  statistics::Scalar average_issued = 0;
 	  statistics::Scalar average_num = 0;
 //	  statistics::Formula average = 0;
+	  statistics::Scalar total_misses = 0;
+	  statistics::Scalar total_hits = 0;
+	  statistics::Scalar pf_hits = 0;
+	  statistics::Scalar late_pf = 0;
+	  statistics::Scalar total_acceses = 0;
+
         } rubyPrefetcherStats;
 
         AbstractController *m_controller;
