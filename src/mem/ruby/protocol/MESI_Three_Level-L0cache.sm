@@ -294,7 +294,8 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
       return Event:PF_Load;
     } else if (type == RubyRequestType:IFETCH) {
       return Event:PF_Ifetch;
-    } else if (type == RubyRequestType:ST) {
+    } else if ((type == RubyRequestType:ST) || (type == RubyRequestType:ATOMIC)
+               || (type == RubyRequestType:Store_Conditional)) {
       return Event:PF_Store;
     } else {
       error("Invalid RubyRequestType");
