@@ -122,6 +122,12 @@ def create(args):
                            *cpu_types[args.cpu]),
     ]
 
+    # Set instruction limit if specified
+    if args.maxinsts:
+        for cluster in system.cpu_cluster:
+            for cpu in cluster.cpus:
+                cpu.max_insts_all_threads = args.maxinsts
+
     # Add the PCI devices we need for this system. The base system
     # doesn't have any PCI devices by default since they are assumed
     # to be added by the configuration scripts needing them.
@@ -248,6 +254,10 @@ def main():
     parser.add_argument("--l3_assoc", type=int, default=16)
     parser.add_argument("--cacheline_size", type=int, default=64)
 
+    # Run duration options
+    parser.add_argument("-I", "--maxinsts", action="store", type=int,
+                        default=None, help="""Total number of instructions to
+                                            simulate (default: run forever)""")
     Ruby.define_options(parser)
     args = parser.parse_args()
 
