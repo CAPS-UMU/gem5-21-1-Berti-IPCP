@@ -240,6 +240,7 @@ structure (TimerTable, inport="yes", external = "yes") {
 
 structure (RubyPrefetcher, external = "yes") {
     void observeMiss(Addr, RubyRequestType);
-    void observePfHit(Addr);
-    void observePfMiss(Addr);
+    void observeHit(Addr, RubyRequestType);
+    void observePfHit(Addr, RubyRequestType);
+    void observePfMiss(Addr, RubyRequestType);
 }

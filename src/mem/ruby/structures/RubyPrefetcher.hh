@@ -111,8 +111,8 @@ class RubyPrefetcher : public SimObject
          * on a line with the line's prefetch bit set. If this address
          * hits in m_array we will continue prefetching the stream.
          */
-        void observePfHit(Addr address);
-        void observePfMiss(Addr address);
+        void observePfHit(Addr address, const RubyRequestType& type);
+        void observePfMiss(Addr address, const RubyRequestType& type);
 
         /**
          * Observe a memory miss from the cache.
@@ -120,6 +120,7 @@ class RubyPrefetcher : public SimObject
          * @param address   The physical address that missed out of the cache.
          */
         void observeMiss(Addr address, const RubyRequestType& type);
+        void observeHit(Addr address, const RubyRequestType& type);
 
         /**
          * Print out some statistics
@@ -257,6 +258,9 @@ class RubyPrefetcher : public SimObject
             statistics::Scalar numPagesCrossed;
             //! Count of misses incurred for blocks that were prefetched
             statistics::Scalar numMissedPrefetchedBlocks;
+	    // Count total cache hits
+	    statistics::Scalar total_hits;
+
         } rubyPrefetcherStats;
 };
 

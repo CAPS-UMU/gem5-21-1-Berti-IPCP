@@ -82,7 +82,8 @@ RubyPrefetcherStats::RubyPrefetcherStats(statistics::Group *parent)
                                "prefetched"),
       ADD_STAT(numPagesCrossed, "Number of prefetches across pages"),
       ADD_STAT(numMissedPrefetchedBlocks, "Number of misses for blocks that "
-                                          "were prefetched, yet missed")
+	       "were prefetched, yet missed"),
+      ADD_STAT(total_hits, "Total cache hits ")
 {
 }
 
@@ -107,7 +108,7 @@ RubyPrefetcher::observeMiss(Addr address, const RubyRequestType& type)
                 // The controller has issued the prefetch request,
                 // but the request for the block arrived earlier.
                 rubyPrefetcherStats.numPartialHits++;
-                observePfMiss(line_addr);
+//                observePfMiss(line_addr);
                 return;
             }
         } else {
@@ -133,7 +134,7 @@ RubyPrefetcher::observeMiss(Addr address, const RubyRequestType& type)
 }
 
 void
-RubyPrefetcher::observePfMiss(Addr address)
+RubyPrefetcher::observePfMiss(Addr address, const RubyRequestType& type)
 {
     rubyPrefetcherStats.numPartialHits++;
     DPRINTF(RubyPrefetcher, "Observed partial hit for %#x\n", address);
@@ -141,7 +142,13 @@ RubyPrefetcher::observePfMiss(Addr address)
 }
 
 void
-RubyPrefetcher::observePfHit(Addr address)
+RubyPrefetcher::observeHit(Addr address, const RubyRequestType& type)
+{
+    rubyPrefetcherStats.total_hits++;
+}
+
+void
+RubyPrefetcher::observePfHit(Addr address, const RubyRequestType& type)
 {
     rubyPrefetcherStats.numHits++;
     DPRINTF(RubyPrefetcher, "Observed hit for %#x\n", address);
