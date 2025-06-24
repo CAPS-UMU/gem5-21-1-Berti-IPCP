@@ -851,21 +851,27 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
 
   action(ppm_observePfMiss, "\ppm",
          desc="Inform the prefetcher about a cache miss with in-flight prefetch") {
+    if (enable_prefetch) {
     peek(mandatoryQueue_in, RubyRequest) {
       if (in_msg.Type != RubyRequestType:IFETCH) {
 	prefetcher.observePfMiss(in_msg.LineAddress, in_msg.Type, in_msg.ProgramCounter);
+	}
       }
     }
   }
 
   action(pph_observePfHit, "\pph",
          desc="Inform the prefetcher if a cache hit was the result of a prefetch") {
+    if (enable_prefetch) {
     peek(mandatoryQueue_in, RubyRequest) {
-      if (cache_entry.isPrefetched) {
 	if (in_msg.Type != RubyRequestType:IFETCH) {
+      if (cache_entry.isPrefetched) {
 	  prefetcher.observePfHit(in_msg.LineAddress, in_msg.Type, in_msg.ProgramCounter);
+	  cache_entry.isPrefetched := false;
+	  } else {
+	    prefetcher.observeHit(in_msg.LineAddress, in_msg.Type, in_msg.ProgramCounter);
 	}
-        cache_entry.isPrefetched := false;
+	}
       }
     }
   }

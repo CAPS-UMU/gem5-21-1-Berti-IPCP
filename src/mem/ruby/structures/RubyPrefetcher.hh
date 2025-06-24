@@ -97,6 +97,7 @@ class RubyPrefetcher : public SimObject
      * @param address   The physical address that missed out of the cache.
      */
     void observeMiss(Addr address, const RubyRequestType& type, Addr pc);
+    void observeHit(Addr address, const RubyRequestType& type, Addr pc);
     void l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, const RubyRequestType& type);
     /**
      * Print out some statistics
@@ -132,6 +133,8 @@ private:
     statistics::Scalar numPagesCrossed;
     //! Count of misses incurred for blocks that were prefetched
     statistics::Scalar numMissedPrefetchedBlocks;
+    // Count total cache hits
+    statistics::Scalar total_hits;
 
     uint64_t m_num_sets_in_ip_table_l1; // OK
     uint64_t m_prediction_threshold_l1; // OK

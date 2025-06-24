@@ -155,6 +155,11 @@ RubyPrefetcher::regStats()
         .desc("number of prefetched blocks accessed")
         ;
 
+    total_hits
+        .name(name() + ".total_hits")
+        .desc("number of cache hits that are not pf")
+        ;
+
     numPartialHits
         .name(name() + ".partial_hits")
         .desc("number of misses observed for a block being prefetched")
@@ -195,6 +200,13 @@ RubyPrefetcher::observePfHit(Addr address, const RubyRequestType& type, Addr pc)
     DPRINTF(RubyPrefetcher, "Observed hit for %#x\n", address);
     l1d_prefetcher_operate((uint64_t)address, (uint64_t)pc, 1, type);
 }
+
+void
+RubyPrefetcher::observeHit(Addr address, const RubyRequestType& type, Addr pc)
+{
+    total_hits++;
+}
+
 
 void RubyPrefetcher::print(std::ostream& out) const { }
 
