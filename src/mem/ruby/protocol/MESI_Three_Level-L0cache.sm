@@ -171,7 +171,7 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     int getOccupancy();
   }
 
-  TBETable TBEs, template="<L0Cache_TBE>", constructor="m_number_of_TBEs";
+  TBETable TBEs, template="<L0Cache_TBE>", constructor="m_number_of_TBEs_L0";
 
   Tick clockEdge();
   Cycles ticksToCycles(Tick t);

@@ -58,6 +58,7 @@ AbstractController::AbstractController(const Params &p)
       m_clusterID(p.cluster_id),
       m_id(p.system->getRequestorId(this)), m_is_blocking(false),
       m_number_of_TBEs(p.number_of_TBEs),
+      m_number_of_TBEs_L0(p.number_of_TBEs_L0),
       m_transitions_per_cycle(p.transitions_per_cycle),
       m_buffer_size(p.buffer_size), m_recycle_latency(p.recycle_latency),
       m_mandatory_queue_latency(p.mandatory_queue_latency),
