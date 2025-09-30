@@ -42,6 +42,7 @@
 #include "mem/ruby/structures/RubyPrefetcher.hh"
 
 #include <cassert>
+#include <cmath>
 
 #include "base/bitfield.hh"
 #include "debug/RubyPrefetcher.hh"
@@ -819,6 +820,36 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
   historyt = new HistoryTable(p.history_table_sets,p.history_table_ways,*this);
   berti = new Berti(p.berti_table_delta_size,*this);
 
+  // Initialize MSHR load logging
+  mshr_load_sampled_log = simout.create(
+      "mshr_load_sampled.csv", false, false);
+  mshr_load_averaged_log = simout.create(
+      "mshr_load_averaged.csv", false, false);
+  mshr_load_histogram_log = simout.create(
+      "mshr_load_histogram.csv", false, false);
+
+  if (mshr_load_sampled_log && mshr_load_sampled_log->stream()) {
+    *mshr_load_sampled_log->stream() << "cycle,mshr_load" << std::endl;
+  }
+  if (mshr_load_averaged_log && mshr_load_averaged_log->stream()) {
+    *mshr_load_averaged_log->stream() << "cycle,avg_mshr_load" << std::endl;
+  }
+  if (mshr_load_histogram_log && mshr_load_histogram_log->stream()) {
+    *mshr_load_histogram_log->stream() << "mshr_load_value,count" << std::endl;
+  }
+}
+
+RubyPrefetcher::~RubyPrefetcher() {
+  // Close log files
+  if (mshr_load_sampled_log) {
+    simout.close(mshr_load_sampled_log);
+  }
+  if (mshr_load_averaged_log) {
+    simout.close(mshr_load_averaged_log);
+  }
+  if (mshr_load_histogram_log) {
+    simout.close(mshr_load_histogram_log);
+  }
 }
 
 RubyPrefetcher::
@@ -854,6 +885,54 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
 
   if (line_addr == 0) return;
   rubyPrefetcherStats.total_acceses++;
+
+  // MSHR load logging - histogram tracking and EMA calculation
+  static uint64_t event_counter = 0;
+  event_counter++;
+
+  // Update histogram - count occurrences of each MSHR load value
+  if (mshr_load >= 0 && mshr_load <= 100) {
+    mshr_load_histogram[mshr_load]++;
+  }
+
+  // Calculate exponential moving average (EMA) for MSHR load
+  // EMA = alpha * current_value + (1-alpha) * previous_ema
+  // Using alpha = 2/(N+1) where N=1000 for EMA over ~1000 samples
+  double alpha = 2.0 / (LOG_WINDOW + 1);
+  if (!ema_initialized) {
+    mshr_load_ema = mshr_load;
+    ema_initialized = true;
+  } else {
+    mshr_load_ema = alpha * mshr_load + (1.0 - alpha) * mshr_load_ema;
+  }
+
+  // Log every 1000th event
+  if (event_counter % LOG_WINDOW == 0) {
+    // Sampled logging - log the current instantaneous MSHR load
+    if (mshr_load_sampled_log && mshr_load_sampled_log->stream()) {
+      *mshr_load_sampled_log->stream() << m_controller->curCycle() << ","
+          << mshr_load << std::endl;
+    }
+
+    // EMA logging - log the exponential moving average MSHR load
+    if (mshr_load_averaged_log && mshr_load_averaged_log->stream()) {
+      *mshr_load_averaged_log->stream() << m_controller->curCycle() << ","
+          << static_cast<uint64_t>(std::round(mshr_load_ema)) << std::endl;
+    }
+
+    // Histogram logging - log histogram counts
+    if (mshr_load_histogram_log && mshr_load_histogram_log->stream()) {
+      for (int i = 0; i <= 100; i++) {
+        if (mshr_load_histogram[i] > 0) {
+          *mshr_load_histogram_log->stream() << i << "," <<
+              mshr_load_histogram[i] << std::endl;
+        }
+      }
+      // Add separator between logging windows
+      *mshr_load_histogram_log->stream() << "---," <<
+          m_controller->curCycle() << std::endl;
+    }
+  }
 
   uint64_t ip_hash = berti->ip_hash(ip) & ip_mask;
 

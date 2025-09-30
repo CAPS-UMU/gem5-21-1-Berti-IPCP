@@ -47,6 +47,7 @@
 #include <bitset>
 
 #include "base/circular_queue.hh"
+#include "base/output.hh"
 #include "base/statistics.hh"
 #include "mem/ruby/common/Address.hh"
 #include "mem/ruby/network/MessageBuffer.hh"
@@ -270,7 +271,7 @@ class RubyPrefetcher : public SimObject
     public:
         typedef RubyPrefetcherParams Params;
         RubyPrefetcher(const Params &p);
-        ~RubyPrefetcher() = default;
+        ~RubyPrefetcher();
 
         /**
          * Implement the prefetch hit(miss) callback interface.
@@ -416,6 +417,21 @@ class RubyPrefetcher : public SimObject
         ShadowCache *scache;
         HistoryTable *historyt;
         Berti *berti;
+
+        // MSHR load logging members
+        OutputStream *mshr_load_sampled_log;
+        OutputStream *mshr_load_averaged_log;
+        OutputStream *mshr_load_histogram_log;
+        uint64_t mshr_load_sum = 0;
+        uint64_t mshr_load_count = 0;
+        const uint64_t LOG_WINDOW = 1000;
+
+        // MSHR load histogram - track counts of each load value (0-100)
+        uint64_t mshr_load_histogram[101] = {0};
+
+        // Exponential moving average for MSHR load
+        double mshr_load_ema = 0.0;
+        bool ema_initialized = false;
 
        int mshr_load = 0; // in %
 
