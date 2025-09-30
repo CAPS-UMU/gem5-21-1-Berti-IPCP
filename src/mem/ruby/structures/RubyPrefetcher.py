@@ -72,11 +72,11 @@ class RubyPrefetcher(SimObject):
 
     confidence_l1 = Param.UInt64(10,"")
     confidence_l2 = Param.UInt64(8,"")
-    confidence_l2r = Param.UInt64(6,"")
+    confidence_i = Param.UInt64(75,"")
 
-    confidence_middle_l1 = Param.UInt64(14,"")
-    confidence_middle_l2 = Param.UInt64(12,"")
-    launch_middle_conf = Param.UInt64(8,"")
+    confidence_middle_l1 = Param.UInt64(75,"")
+    confidence_middle_l2 = Param.UInt64(65,"")
+    launch_middle_conf = Param.UInt64(4,"")
 
     # LIMITS
     max_history_ip = Param.UInt64(8,"")
@@ -86,7 +86,7 @@ class RubyPrefetcher(SimObject):
     berti_r = Param.UInt64(0x0,"")
     berti_l1 = Param.UInt64(0x1,"")
     berti_l2 = Param.UInt64(0x2,"")
-    berti_l2r = Param.UInt64(0x3,"")
+    berti_i = Param.UInt64(0x3,"")
 
     page_shift = Param.UInt64(12, "Number of bits to mask to get a page number")
     latency_table_size = Param.UInt64(8192, "Number of MSHRs in L0 + SQ Size + LQ Size + Prefetch Queue Size")

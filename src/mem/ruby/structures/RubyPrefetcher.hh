@@ -243,7 +243,7 @@ namespace ruby
       static uint64_t berti_r;
       static uint64_t berti_l1;
       static uint64_t berti_l2;
-      static uint64_t berti_l2r;
+      static uint64_t berti_i;
 
       bool static compare_greater_delta(delta_t a, delta_t b);
       bool static compare_rpl(delta_t a, delta_t b);
@@ -322,7 +322,7 @@ class RubyPrefetcher : public SimObject
         uint64_t getConfidenceInit() const { return confidence_init; }
         uint64_t getConfidenceL1() const { return confidence_l1; }
         uint64_t getConfidenceL2() const { return confidence_l2; }
-        uint64_t getConfidenceL2r() const { return confidence_l2r; }
+        uint64_t getConfidenceI() const { return confidence_i; }
         uint64_t getConfidenceMiddleL1() const { return confidence_middle_l1; }
         uint64_t getConfidenceMiddleL2() const { return confidence_middle_l2; }
         uint64_t getLaunchMiddleConf() const { return launch_middle_conf; }
@@ -331,7 +331,7 @@ class RubyPrefetcher : public SimObject
         uint64_t getBertiR() const { return berti_r; }
         uint64_t getBertiL1() const { return berti_l1; }
         uint64_t getBertiL2() const { return berti_l2; }
-        uint64_t getBertiL2r() const { return berti_l2r; }
+        uint64_t getBertiI() const { return berti_i; }
         uint64_t getPageShift() const { return page_shift; }
         uint64_t getLatencyTableSize() const { return latency_table_size; }
         uint64_t getL0Sets() const { return l0_sets; }
@@ -365,7 +365,7 @@ class RubyPrefetcher : public SimObject
 
         uint64_t confidence_l1;
         uint64_t confidence_l2;
-        uint64_t confidence_l2r;
+        uint64_t confidence_i;
 
         uint64_t confidence_middle_l1;
         uint64_t confidence_middle_l2;
@@ -377,7 +377,7 @@ class RubyPrefetcher : public SimObject
         uint64_t berti_r;
         uint64_t berti_l1;
         uint64_t berti_l2;
-        uint64_t berti_l2r;
+        uint64_t berti_i;
 
         const uint64_t page_shift;
 

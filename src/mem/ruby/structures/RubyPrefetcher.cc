@@ -417,7 +417,7 @@ uint16_t HistoryTable::get(uint32_t latency, uint64_t tag, uint64_t act_addr,
 uint64_t Berti::berti_r;
 uint64_t Berti::berti_l1;
 uint64_t Berti::berti_l2;
-uint64_t Berti::berti_l2r;
+uint64_t Berti::berti_i;
 
 Berti::Berti(uint64_t p_size, RubyPrefetcher& rp) : size(p_size),
                                                     rp_instance(rp)
@@ -425,7 +425,7 @@ Berti::Berti(uint64_t p_size, RubyPrefetcher& rp) : size(p_size),
   berti_r = rp.getBertiR();
   berti_l1 = rp.getBertiL1();
   berti_l2 = rp.getBertiL2();
-  berti_l2r = rp.getBertiL2r();
+  berti_i = rp.getBertiI();
 };
 
 void Berti::increase_conf_tag(uint64_t tag)
@@ -455,7 +455,6 @@ void Berti::increase_conf_tag(uint64_t tag)
       // Set bits to prefetch level
       if (i.conf > rp_instance.getConfidenceL1())i.rpl = rp_instance.getBertiL1();
       else if (i.conf > rp_instance.getConfidenceL2()) i.rpl = rp_instance.getBertiL2();
-      else if (i.conf > rp_instance.getConfidenceL2r()) i.rpl = rp_instance.getBertiL2r();
       else i.rpl = rp_instance.getBertiR();
 
       i.conf = 0; // Reset confidence
@@ -481,7 +480,7 @@ void Berti::add(uint64_t tag, int64_t delta)
     delta_t new_delta;
     new_delta.delta = delta;
     new_delta.conf = rp_instance.getConfidenceInit();
-    new_delta.rpl = rp_instance.getBertiR();
+    new_delta.rpl = rp_instance.getBertiI(); // Initial replacement level
     auto it = std::find_if(std::begin(entry->deltas), std::end(entry->deltas), [](const auto i){
       return (i.delta == 0);
     });
@@ -550,11 +549,11 @@ void Berti::add(uint64_t tag, int64_t delta)
 
   // We find the delta with less confidence
   std::sort(std::begin(entry->deltas), std::end(entry->deltas), compare_rpl);
-  if (entry->deltas.front().rpl == rp_instance.getBertiR() || entry->deltas.front().rpl == rp_instance.getBertiL2r())
+  if (entry->deltas.front().rpl == rp_instance.getBertiR() || entry->deltas.front().rpl == rp_instance.getBertiL2())
   {
     entry->deltas.front().delta = delta;
     entry->deltas.front().conf = rp_instance.getConfidenceInit();
-    entry->deltas.front().rpl = rp_instance.getBertiR();
+    entry->deltas.front().rpl = rp_instance.getBertiI(); // Initial replacement level
   }
 }
 
@@ -574,23 +573,66 @@ uint8_t Berti::get(uint64_t tag, std::vector<delta_t> &res)
   }
 
   // We found the tag
-  berti *entry  = bertit[tag];
+  berti *entry = bertit[tag];
 
-  for (auto &i: entry->deltas) if (i.delta != 0 && i.rpl != rp_instance.getBertiR()) res.push_back(i);
+  // 1) Collect deltas already assigned to a prefetch replacement level and
+  // optionally promote deltas that are still at the initial replacement
+  // level. We only attempt promotion when the tag's global confidence is at
+  // least 4 (to avoid noisy estimates). For deltas at getBertiI(), estimate
+  // per-delta confidence as (i.conf * 100) / entry->conf and compare the
+  // resulting integer percent against getConfidenceI() which is expected to
+  // be in the 0-100 range. If pct > getConfidenceI(), promote to L2.
+  for (const auto &i : entry->deltas) {
+    if (i.delta == 0) continue;
 
-  if (res.empty() && entry->conf >= rp_instance.getLaunchMiddleConf())
-  {
-    // We do not find any delta, so we will try to launch with small confidence
-    for (auto &i: entry->deltas)
-    {
-      if (i.delta != 0)
-      {
+    // Keep deltas already assigned to a replacement level (not the R level)
+    if (i.rpl != rp_instance.getBertiR() || i.rpl != rp_instance.getBertiI()) {
+      res.push_back(i);
+      continue;
+    }
+
+    // Consider promotion for deltas at the initial replacement level
+    if (i.rpl == rp_instance.getBertiI() && entry->conf >= rp_instance.getLaunchMiddleConf()) {
+      // compute integer percent (0-100)
+      int pct = static_cast<int>((i.conf * 100) / entry->conf);
+      if (pct >= static_cast<int>(rp_instance.getConfidenceI())) {
         delta_t new_delta;
         new_delta.delta = i.delta;
-        if (i.conf > rp_instance.getConfidenceMiddleL1()) new_delta.rpl = rp_instance.getBertiL1();
-        else if (i.conf > rp_instance.getConfidenceMiddleL2()) new_delta.rpl = rp_instance.getBertiL2();
-        else continue;
+        new_delta.rpl = rp_instance.getBertiL2();
         res.push_back(new_delta);
+      }
+    }
+  }
+
+  // TODO Test enqueueing additional deltas if we have space in res vector.
+
+  // 2) If none found, consider promoting deltas based on estimated accuracy.
+  if (res.empty() && entry->conf >= rp_instance.getLaunchMiddleConf()) {
+    // Defensive: ensure we won't divide by zero (entry->conf should be >= launch
+    // threshold, but check anyway).
+    if (entry->conf > 0) {
+      // Interpret per-delta accuracy as an integer percentage (0-100) and
+      // compare directly against integer configuration parameters.
+      for (const auto &i : entry->deltas) {
+        if (i.delta == 0)
+          continue;
+
+        // integer accuracy percent on 0-100 scale (floor division)
+        int accuracy_percent = static_cast<int>((i.conf * 100) / entry->conf);
+
+        if (accuracy_percent >= rp_instance.getConfidenceMiddleL1()) {
+          delta_t new_delta;
+          new_delta.delta = i.delta;
+          new_delta.rpl = rp_instance.getBertiL1();
+          res.push_back(new_delta);
+        } else if (accuracy_percent >= rp_instance.getConfidenceMiddleL2()) {
+          delta_t new_delta;
+          new_delta.delta = i.delta;
+          new_delta.rpl = rp_instance.getBertiL2();
+          res.push_back(new_delta);
+        } else {
+          continue;
+        }
       }
     }
   }
@@ -633,8 +675,8 @@ bool Berti::compare_rpl(delta_t a, delta_t b)
 {
   if (a.rpl == berti_r && b.rpl != berti_r) return 1;
   else if (b.rpl == berti_r && a.rpl != berti_r) return 0;
-  else if (a.rpl == berti_l2r && b.rpl != berti_l2r) return 1;
-  else if (b.rpl == berti_l2r && a.rpl != berti_l2r) return 0;
+  else if (a.rpl == berti_i && b.rpl != berti_i) return 1;
+  else if (b.rpl == berti_i && a.rpl != berti_i) return 0;
   else
   {
     if (a.conf < b.conf) return 1;
@@ -653,8 +695,8 @@ bool Berti::compare_greater_delta(delta_t a, delta_t b)
     else if (a.rpl != berti_l2 && b.rpl == berti_l2) return 0;
     else
     {
-      if (a.rpl == berti_l2r && b.rpl != berti_l2r) return 1;
-      if (a.rpl != berti_l2r && b.rpl == berti_l2r) return 0;
+      if (a.rpl == berti_i && b.rpl != berti_i) return 1;
+      if (a.rpl != berti_i && b.rpl == berti_i) return 0;
       else
       {
         if (std::abs(a.delta) < std::abs(b.delta)) return 1;
@@ -790,7 +832,7 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
       confidence_init(p.confidence_init),
       confidence_l1(p.confidence_l1),
       confidence_l2(p.confidence_l2),
-      confidence_l2r(p.confidence_l2r),
+      confidence_i(p.confidence_i),
       confidence_middle_l1(p.confidence_middle_l1),
       confidence_middle_l2(p.confidence_middle_l2),
       launch_middle_conf(p.launch_middle_conf),
@@ -799,7 +841,7 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
       berti_r(p.berti_r),
       berti_l1(p.berti_l1),
       berti_l2(p.berti_l2),
-      berti_l2r(p.berti_l2r),
+      berti_i(p.berti_i),
       page_shift(p.page_shift),
       latency_table_size(p.latency_table_size),
       l0_sets(p.l0_sets),
