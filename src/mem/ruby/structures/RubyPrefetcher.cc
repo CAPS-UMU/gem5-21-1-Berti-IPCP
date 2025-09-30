@@ -993,30 +993,25 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
 # endif
     } else rubyPrefetcherStats.no_cross_page++;
 
-//    float mshr_load = get_mshr_occupancy_ratio() * 100;
+    if (i.rpl == berti_l1) {
+      rubyPrefetcherStats.pf_to_l1++;
+    } else {
+      rubyPrefetcherStats.pf_to_l2++;
+    }
 
-    bool fill_this_level = (i.rpl == berti_l1) && (mshr_load < mshr_limit);
+    DPRINTF(RubyPrefetcher, "Enqueue PF %#x\n", p_addr);
+    m_controller->enqueuePrefetch(p_addr, type);
+    ++rubyPrefetcherStats.average_issued;
+    if (first_issue) {
+      first_issue = false;
+      ++rubyPrefetcherStats.average_num;
+    }
 
-    if (i.rpl == berti_l1 && mshr_load >= mshr_limit) rubyPrefetcherStats.pf_to_l2_bc_mshr++;
-    if (fill_this_level) rubyPrefetcherStats.pf_to_l1++;
-    else rubyPrefetcherStats.pf_to_l2++;
-
-      DPRINTF(RubyPrefetcher, "Enqueue PF %#x\n", p_addr);
-      m_controller->enqueuePrefetch(p_addr, type);
-      ++rubyPrefetcherStats.average_issued;
-      if (first_issue)
-      {
-	first_issue = false;
-	++rubyPrefetcherStats.average_num;
-      }
-
-      if (fill_this_level)
-      {
-	if (!scache->get(p_b_addr))
-	{
-	latencyt->add(p_b_addr, ip_hash, true, m_controller->curCycle());
-	}
-      }
+    // Always update the latency table if needed
+    if (!scache->get(p_b_addr))
+    {
+      latencyt->add(p_b_addr, ip_hash, true, m_controller->curCycle());
+    }
   }
 
   return;
