@@ -396,6 +396,7 @@ class RubyPrefetcher : public SimObject
 	  statistics::Scalar pf_to_l1 = 0;
 	  statistics::Scalar pf_to_l2 = 0;
 	  statistics::Scalar pf_to_l2_bc_mshr = 0;
+	  statistics::Scalar no_pf_bc_mshr = 0;
 	  statistics::Scalar cant_track_latency = 0;
 	  statistics::Scalar cross_page = 0;
 	  statistics::Scalar no_cross_page = 0;

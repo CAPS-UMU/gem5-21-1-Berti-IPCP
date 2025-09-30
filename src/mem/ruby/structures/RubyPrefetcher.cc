@@ -860,6 +860,7 @@ RubyPrefetcherStats::RubyPrefetcherStats(statistics::Group *parent)
       ADD_STAT(pf_to_l1, "Prefetches to L0"),
       ADD_STAT(pf_to_l2, "Prefetches to L1"),
       ADD_STAT(pf_to_l2_bc_mshr, "Prefetches to L1 because of MSHR"),
+      ADD_STAT(no_pf_bc_mshr, "No prefetch because of MSHR load"),
       ADD_STAT(cant_track_latency, "Prefetches where latency cannot be tracked"),
       ADD_STAT(cross_page, "Berti crossed a memory page"),
       ADD_STAT(no_cross_page, "Berti did not cross a memory page"),
@@ -955,7 +956,7 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
   {
   }
 
-  std::vector<delta_t> deltas(berti_table_delta_size);
+  std::vector<delta_t> deltas;
 
   auto berti_result = berti->get(ip_hash, deltas);
 
@@ -970,10 +971,19 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
     uint64_t p_addr = (line_addr + i.delta) << RubySystem::getBlockSizeBits();
     uint64_t p_b_addr = (p_addr >> RubySystem::getBlockSizeBits());
 
-    if (latencyt->get(p_b_addr)) continue;
-    if (i.rpl == berti_r) return;
-    if (p_addr == 0) continue;
-
+    if (latencyt->get(p_b_addr)) {
+        continue; // We do not prefetch if it is already in flight
+    }
+    if (i.rpl == berti_r) {
+        continue; // This should not happen, but just in case
+    }
+    if (mshr_load >= mshr_limit) {
+      rubyPrefetcherStats.no_pf_bc_mshr++;
+      return; // We can skip all deltas as the mshr load is too high
+    }
+    if (p_addr == 0) {
+        continue;
+    }
     if ((p_addr >> page_shift) != (addr >> page_shift))
     {
       rubyPrefetcherStats.cross_page++;
