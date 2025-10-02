@@ -423,6 +423,8 @@ class RubyPrefetcher : public SimObject
         OutputStream *mshr_load_sampled_log;
         OutputStream *mshr_load_averaged_log;
         OutputStream *mshr_load_histogram_log;
+  // Prefetch log stream: records cycle, total prefetches, target level
+  OutputStream *prefetch_log = nullptr;
         uint64_t mshr_load_sum = 0;
         uint64_t mshr_load_count = 0;
         const uint64_t LOG_WINDOW = 1000;

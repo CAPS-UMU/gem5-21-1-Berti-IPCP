@@ -869,6 +869,8 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
       "mshr_load_averaged.csv", false, false);
   mshr_load_histogram_log = simout.create(
       "mshr_load_histogram.csv", false, false);
+  // Prefetch logging: cycle, total_prefetches, target_level (L1/L2)
+  prefetch_log = simout.create("prefetch_log.csv", false, false);
 
   if (mshr_load_sampled_log && mshr_load_sampled_log->stream()) {
     *mshr_load_sampled_log->stream() << "cycle,mshr_load" << std::endl;
@@ -878,6 +880,9 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
   }
   if (mshr_load_histogram_log && mshr_load_histogram_log->stream()) {
     *mshr_load_histogram_log->stream() << "mshr_load_value,count" << std::endl;
+  }
+  if (prefetch_log && prefetch_log->stream()) {
+    *prefetch_log->stream() << "cycle,total_prefetches,target_level" << std::endl;
   }
 }
 
@@ -891,6 +896,9 @@ RubyPrefetcher::~RubyPrefetcher() {
   }
   if (mshr_load_histogram_log) {
     simout.close(mshr_load_histogram_log);
+  }
+  if (prefetch_log) {
+    simout.close(prefetch_log);
   }
 }
 
@@ -975,6 +983,9 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
       *mshr_load_histogram_log->stream() << "---," <<
           m_controller->curCycle() << std::endl;
     }
+    // Flush the prefetch_log as it doesn't flush per line
+    if (prefetch_log && prefetch_log->stream())
+      prefetch_log->stream()->flush();
   }
 
   uint64_t ip_hash = berti->ip_hash(ip) & ip_mask;
@@ -1043,6 +1054,13 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
 
     DPRINTF(RubyPrefetcher, "Enqueue PF %#x\n", p_addr);
     m_controller->enqueuePrefetch(p_addr, type);
+    // Log prefetch event: cycle, total prefetches so far, and target level (L1/L2)
+    if (prefetch_log && prefetch_log->stream()) {
+      const char *target = (i.rpl == berti_l1) ? "L1" : "L2";
+      *prefetch_log->stream() << m_controller->curCycle() << ","
+        << static_cast<uint64_t>(rubyPrefetcherStats.average_issued.value()) << ","
+        << target << '\n';
+    }
     ++rubyPrefetcherStats.average_issued;
     if (first_issue) {
       first_issue = false;
