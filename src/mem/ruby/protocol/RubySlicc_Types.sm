@@ -246,6 +246,6 @@ structure (RubyPrefetcher, external = "yes") {
     void observePfHit(Addr, RubyRequestType, Addr);
     void observePfMiss(Addr, RubyRequestType, Addr);
     void setMSHRLoad(int);
-    void prefetcher_cache_fill(Addr, bool, int, int);
+    void prefetcher_cache_fill(Addr, bool, int, int, MachineID);
     void insertReplacement(Addr);
 }

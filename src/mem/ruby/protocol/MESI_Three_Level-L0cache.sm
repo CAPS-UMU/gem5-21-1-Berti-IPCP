@@ -160,6 +160,9 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     DataBlock DataBlk,                desc="Buffer for the data block";
     bool Dirty, default="false",   desc="data is dirty";
     int pendingAcks, default="0", desc="number of pending acks";
+    // Origin stores the MachineID of the top level resolver that supplied the
+    // data which populated this TBE.
+    MachineID Origin, desc="MachineID origin for this TBE";
   }
 
   structure(TBETable, external="yes") {
@@ -419,6 +422,13 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     if (messgeBuffer_in.isReady(clockEdge())) {
       peek(messgeBuffer_in, CoherenceMsg, block_on="addr") {
         assert(in_msg.Dest == machineID);
+        // If a transient buffer entry exists for this address, store the
+        // resolver MachineID (from the message Origin field) in the TBE.
+        // Otherwise we don't store it since there is no persistent TBE to
+        // attach it to.
+        if (TBEs.isPresent(in_msg.addr)) {
+          TBEs[in_msg.addr].Origin := in_msg.Origin;
+        }
 
         Entry cache_entry := getCacheEntry(in_msg.addr);
         TBE tbe := TBEs[in_msg.addr];
@@ -707,6 +717,9 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     set_tbe(TBEs[address]);
     tbe.Dirty := cache_entry.Dirty;
     tbe.DataBlk := cache_entry.DataBlk;
+    // initialize Origin to a sensible default (local L1) to avoid
+    // reading uninitialized MachineID fields if used before set.
+    tbe.Origin := createMachineID(MachineType:L1Cache, version);
   }
 
   action(k_popMandatoryQueue, "k", desc="Pop mandatory queue") {
@@ -729,9 +742,11 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     if (enable_prefetch) {
       assert(is_valid(cache_entry));
       if (Dcache.isTagPresent(address)) {
-	prefetcher.prefetcher_cache_fill(address, cache_entry.isPrefetched, cache_entry.getSet(), cache_entry.getWay());
-	prefetcher.setMSHRLoad(TBEs.getOccupancy());
-       }
+        // Pass the MachineID origin directly to the prefetcher.
+        TBE tbe := TBEs[address];
+        prefetcher.prefetcher_cache_fill(address, cache_entry.isPrefetched, cache_entry.getSet(), cache_entry.getWay(), tbe.Origin);
+        prefetcher.setMSHRLoad(TBEs.getOccupancy());
+      }
     }
     TBEs.deallocate(address);
     unset_tbe();
@@ -741,6 +756,10 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     peek(messgeBuffer_in, CoherenceMsg) {
       assert(is_valid(cache_entry));
       cache_entry.DataBlk := in_msg.DataBlk;
+      // Store sender MachineID in the TBE if present.
+      if (TBEs.isPresent(address)) {
+        TBEs[address].Origin := in_msg.Origin;
+      }
     }
   }
 
@@ -748,6 +767,10 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
     peek(messgeBuffer_in, CoherenceMsg) {
       assert(is_valid(cache_entry));
       cache_entry.DataBlk := in_msg.DataBlk;
+      // Store sender MachineID in the TBE if present.
+      if (TBEs.isPresent(address)) {
+        TBEs[address].Origin := in_msg.Origin;
+      }
     }
   }
 

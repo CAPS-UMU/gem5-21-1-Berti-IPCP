@@ -90,6 +90,7 @@ structure(ResponseMsg, desc="...", interface="Message") {
   Addr addr,              desc="Physical address for this request";
   CoherenceResponseType Type,   desc="Type of response (Ack, Data, etc)";
   MachineID Sender,             desc="What component sent the data";
+  MachineID Origin,             desc="Original resolver that supplied the data";
   NetDest Destination,          desc="Node to whom the data is sent";
   DataBlock DataBlk,            desc="Data for the cache line";
   bool Dirty, default="false",  desc="Dirty bit";

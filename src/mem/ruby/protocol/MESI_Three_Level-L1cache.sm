@@ -156,6 +156,7 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
     DataBlock DataBlk,                desc="Buffer for the data block";
     bool Dirty, default="false",   desc="data is dirty";
     int pendingAcks, default="0", desc="number of pending acks";
+    MachineID Origin,       desc="Originator of the data for this TBE (set when filled from higher level)";
   }
 
   structure(TBETable, external="yes") {
@@ -467,6 +468,8 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
         out_msg.DataBlk := cache_entry.DataBlk;
         out_msg.Dirty := cache_entry.Dirty;
         out_msg.Sender := machineID;
+        // Upward response to L2: do not set Origin here. Origin is only set
+        // when sending data downward to lower levels.
         out_msg.Destination.add(in_msg.Requestor);
         out_msg.MessageSize := MessageSizeType:Response_Data;
       }
@@ -481,6 +484,7 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
       out_msg.DataBlk := cache_entry.DataBlk;
       out_msg.Dirty := cache_entry.Dirty;
       out_msg.Sender := machineID;
+      // This is an upward send (to L2) as part of downgrade; do not set Origin here.
       out_msg.Destination.add(mapAddressToRange(address, MachineType:L2Cache,
                           l2_select_low_bit, l2_select_num_bits, clusterID));
       out_msg.MessageSize := MessageSizeType:Response_Data;
@@ -496,6 +500,7 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
         out_msg.DataBlk := tbe.DataBlk;
         out_msg.Dirty := tbe.Dirty;
         out_msg.Sender := machineID;
+        // Upward response to L2 from TBE: do not set Origin here.
         out_msg.Destination.add(in_msg.Requestor);
         out_msg.MessageSize := MessageSizeType:Response_Data;
       }
@@ -510,6 +515,7 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
       out_msg.DataBlk := tbe.DataBlk;
       out_msg.Dirty := tbe.Dirty;
       out_msg.Sender := machineID;
+      // Upward send to L2 from TBE: do not set Origin here.
       out_msg.Destination.add(mapAddressToRange(address, MachineType:L2Cache,
                           l2_select_low_bit, l2_select_num_bits, clusterID));
       out_msg.MessageSize := MessageSizeType:Response_Data;
@@ -536,6 +542,7 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
       out_msg.DataBlk := cache_entry.DataBlk;
       out_msg.Dirty := cache_entry.Dirty;
       out_msg.Sender := machineID;
+      // Upward writeback to L2: do not set Origin here.
       out_msg.Destination.add(mapAddressToRange(address, MachineType:L2Cache,
                           l2_select_low_bit, l2_select_num_bits, clusterID));
       out_msg.MessageSize := MessageSizeType:Writeback_Data;
@@ -550,6 +557,7 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
       out_msg.DataBlk := tbe.DataBlk;
       out_msg.Dirty := tbe.Dirty;
       out_msg.Sender := machineID;
+      // Upward writeback from TBE to L2: do not set Origin here.
       out_msg.Destination.add(mapAddressToRange(address, MachineType:L2Cache,
                           l2_select_low_bit, l2_select_num_bits, clusterID));
       out_msg.MessageSize := MessageSizeType:Writeback_Data;
@@ -639,6 +647,16 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
           out_msg.addr := address;
           out_msg.Class := CoherenceClass:DATA;
           out_msg.Sender := machineID;
+          // If there is a transient buffer for this miss, propagate its origin
+          // (this ensures only the first response to the miss carries the
+          // higher-level origin). Otherwise, this is an L1-resolved hit and
+          // we set origin := L1.
+          TBE tbe_local := TBEs[address];
+          if (is_valid(tbe_local)) {
+            out_msg.Origin := tbe_local.Origin;
+          } else {
+            out_msg.Origin := machineID;
+          }
           out_msg.Dest := createMachineID(MachineType:L0Cache, version);
           out_msg.DataBlk := cache_entry.DataBlk;
           out_msg.MessageSize := MessageSizeType:Response_Data;
@@ -654,6 +672,16 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
           out_msg.addr := address;
           out_msg.Class := CoherenceClass:DATA_EXCLUSIVE;
           out_msg.Sender := machineID;
+          // If there is a transient buffer for this miss, propagate its origin
+          // (this ensures only the first response to the miss carries the
+          // higher-level origin). Otherwise, this is an L1-resolved hit and
+          // we set origin := L1.
+          TBE tbe_local := TBEs[address];
+          if (is_valid(tbe_local)) {
+            out_msg.Origin := tbe_local.Origin;
+          } else {
+            out_msg.Origin := machineID;
+          }
           out_msg.Dest := createMachineID(MachineType:L0Cache, version);
           out_msg.DataBlk := cache_entry.DataBlk;
           out_msg.Dirty := cache_entry.Dirty;
@@ -672,6 +700,16 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
           out_msg.addr := address;
           out_msg.Class := CoherenceClass:STALE_DATA;
           out_msg.Sender := machineID;
+          // If there is a transient buffer for this miss, propagate its origin
+          // (this ensures only the first response to the miss carries the
+          // higher-level origin). Otherwise, this is an L1-resolved hit and
+          // we set origin := L1.
+          TBE tbe_local := TBEs[address];
+          if (is_valid(tbe_local)) {
+            out_msg.Origin := tbe_local.Origin;
+          } else {
+            out_msg.Origin := machineID;
+          }
           out_msg.Dest := createMachineID(MachineType:L0Cache, version);
           out_msg.DataBlk := cache_entry.DataBlk;
           out_msg.Dirty := cache_entry.Dirty;
@@ -686,6 +724,11 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
     set_tbe(TBEs[address]);
     tbe.Dirty := cache_entry.Dirty;
     tbe.DataBlk := cache_entry.DataBlk;
+    // Initialize the transient Origin field so it has a sensible default
+    // when the TBE is allocated. This prevents accidental reads of an
+    // uninitialized MachineID and ensures u_writeDataFromL2Response can
+    // safely rely on the TBE being initialized when present.
+    tbe.Origin := machineID;
   }
 
   action(k_popL0RequestQueue, "k", desc="Pop mandatory queue.") {
@@ -724,6 +767,19 @@ machine(MachineType:L1Cache, "MESI Directory L1 Cache CMP")
       assert(is_valid(cache_entry));
       cache_entry.DataBlk := in_msg.DataBlk;
       cache_entry.Dirty := in_msg.Dirty;
+      // If there is a transient buffer for this miss, record the origin
+      // there so only the first response to the miss propagates the higher origin.
+      // NOTE: It is possible that we should only don this for the following types:
+      //  - CoherenceResponseType::DATA
+      //  - CoherenceResponseType::DATA_EXCLUSIVE
+      TBE tbe_local := TBEs[in_msg.addr];
+      if (is_valid(tbe_local)) {
+        // Copy the origin info from the incoming response into the TBE.
+        // We avoid calling is_valid() on MachineID scalar fields here;
+        // the presence of the TBE is sufficient to indicate this was a
+        // miss we need to track.
+        tbe_local.Origin := in_msg.Origin;
+      }
     }
   }
 

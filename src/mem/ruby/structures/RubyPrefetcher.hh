@@ -50,6 +50,8 @@
 #include "base/output.hh"
 #include "base/statistics.hh"
 #include "mem/ruby/common/Address.hh"
+#include "mem/ruby/protocol/MachineType.hh"
+#include "mem/ruby/common/MachineID.hh"
 #include "mem/ruby/network/MessageBuffer.hh"
 #include "mem/ruby/slicc_interface/AbstractController.hh"
 #include "mem/ruby/slicc_interface/RubyRequest.hh"
@@ -304,7 +306,7 @@ class RubyPrefetcher : public SimObject
 
         void prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit,
 				      bool useful_prefetch, const RubyRequestType& type);
-        void prefetcher_cache_fill(Addr addr, bool prefetch, uint32_t set, uint32_t way);
+        void prefetcher_cache_fill(Addr addr, bool prefetch, int set, int way, MachineID source);
 
         uint64_t getBertiTableSize() const { return berti_table_size; }
         uint64_t getBertiTableDeltaSize() const { return berti_table_delta_size; }

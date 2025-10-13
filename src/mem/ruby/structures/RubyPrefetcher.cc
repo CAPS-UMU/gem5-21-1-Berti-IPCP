@@ -1077,14 +1077,18 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
   return;
 }
 
-void RubyPrefetcher::prefetcher_cache_fill(Addr addr, bool prefetch, uint32_t set, uint32_t way)
+void RubyPrefetcher::prefetcher_cache_fill(Addr addr, bool prefetch, int set, int way, MachineID source)
 {
   uint64_t line_addr = ((uint64_t)addr) >> RubySystem::getBlockSizeBits();
   uint64_t tag     = latencyt->get_tag(line_addr);
   uint64_t cycle   = latencyt->del(line_addr) & time_mask;
   uint64_t latency = 0;
 
-  DPRINTF(RubyPrefetcher, "Observed fill for %#x\n", line_addr);
+  MachineType src_mt = source.getType();
+  std::string srcName = MachineType_to_string(src_mt);
+  DPRINTF(RubyPrefetcher,
+    "Observed fill for 0x%llx from %s (prefetched=%d, set=%d, way=%d)\n",
+    (unsigned long long)line_addr, srcName.c_str(), prefetch ? 1 : 0, set, way);
 
 //  uint64_t evicted_addr = last_replaced_addr;
   last_replaced_addr = 0;
