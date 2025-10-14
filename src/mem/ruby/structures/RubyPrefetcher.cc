@@ -906,7 +906,15 @@ RubyPrefetcher::
 RubyPrefetcherStats::RubyPrefetcherStats(statistics::Group *parent)
     : statistics::Group(parent, "RubyPrefetcher"),
       ADD_STAT(welford_average, "Average latency (Welford)"),
-      ADD_STAT(welford_num, "Prefetches where latency can be tracked (Welford) "),
+      ADD_STAT(welford_average_L1, "Average latency for fills from L1 (Welford)"),
+      ADD_STAT(welford_average_L2, "Average latency for fills from L2 (Welford)"),
+      ADD_STAT(welford_average_dir, "Average latency for fills from directory (Welford)"),
+      ADD_STAT(welford_average_other, "Average latency for fills from other (Welford)"),
+      ADD_STAT(welford_num, "Fills where latency can be tracked (Welford) "),
+      ADD_STAT(welford_num_L1, "Fills from L1 where latency can be tracked (Welford) "),
+      ADD_STAT(welford_num_L2, "Fills from L2 where latency can be tracked (Welford) "),
+      ADD_STAT(welford_num_dir, "Fills from directory where latency can be tracked (Welford) "),
+      ADD_STAT(welford_num_other, "Fills from other where latency can be tracked (Welford) "),
       ADD_STAT(pf_to_l1, "Prefetches to L0"),
       ADD_STAT(pf_to_l2, "Prefetches to L1"),
       ADD_STAT(pf_to_l2_bc_mshr, "Prefetches to L1 because of MSHR"),
@@ -1104,14 +1112,52 @@ void RubyPrefetcher::prefetcher_cache_fill(Addr addr, bool prefetch, int set, in
   {
     if (latency != 0)
     {
-      // Calculate average latency
-      if (rubyPrefetcherStats.welford_num.value() == 0) rubyPrefetcherStats.welford_average = (float) latency;
-      else
-      {
-	double temp = ((((double) latency) - (double)rubyPrefetcherStats.welford_average.value()) / (uint64_t)rubyPrefetcherStats.welford_num.value());
-        rubyPrefetcherStats.welford_average = (double)rubyPrefetcherStats.welford_average.value() + temp;
+      // Update overall and per-source-level Welford averages/counts.
+      // Select per-level references based on the source machine type so
+      // the same update code can be applied to both overall and level.
+      statistics::Scalar &overall_avg = rubyPrefetcherStats.welford_average;
+      statistics::Scalar &overall_num = rubyPrefetcherStats.welford_num;
+
+      // Default pointers (set to directory by default)
+      statistics::Scalar *level_avg_ptr = &rubyPrefetcherStats.welford_average_dir;
+      statistics::Scalar *level_num_ptr = &rubyPrefetcherStats.welford_num_dir;
+
+      switch (src_mt) {
+        case MachineType_L1Cache:
+          level_avg_ptr = &rubyPrefetcherStats.welford_average_L1;
+          level_num_ptr = &rubyPrefetcherStats.welford_num_L1;
+          break;
+        case MachineType_L2Cache:
+          level_avg_ptr = &rubyPrefetcherStats.welford_average_L2;
+          level_num_ptr = &rubyPrefetcherStats.welford_num_L2;
+          break;
+        case MachineType_Directory:
+          level_avg_ptr = &rubyPrefetcherStats.welford_average_dir;
+          level_num_ptr = &rubyPrefetcherStats.welford_num_dir;
+          break;
+        default:
+          // Untracked machine type - warn and route to directory bucket
+          DPRINTF(RubyPrefetcher, "Untracked MachineType %s for fill latency %llu\n",
+                  srcName.c_str(), (unsigned long long)latency);
+          level_avg_ptr = &rubyPrefetcherStats.welford_average_other;
+          level_num_ptr = &rubyPrefetcherStats.welford_num_other;
+          break;
       }
-      rubyPrefetcherStats.welford_num++;
+
+      auto update_welford = [&](statistics::Scalar &avg, statistics::Scalar &num) {
+        if (num.value() == 0) {
+          avg = (double) latency;
+        } else {
+          double temp = ((((double) latency) - (double)avg.value()) / (uint64_t)num.value());
+          avg = (double)avg.value() + temp;
+        }
+        num++;
+      };
+
+      // Update overall
+      update_welford(overall_avg, overall_num);
+      // Update per-level
+      update_welford(*level_avg_ptr, *level_num_ptr);
     }
   }
 

@@ -392,7 +392,15 @@ class RubyPrefetcher : public SimObject
 	  RubyPrefetcherStats(statistics::Group *parent);
 
 	  statistics::Scalar welford_average;
+	  statistics::Scalar welford_average_L1;
+	  statistics::Scalar welford_average_L2;
+	  statistics::Scalar welford_average_dir;
+	  statistics::Scalar welford_average_other;
 	  statistics::Scalar welford_num;
+	  statistics::Scalar welford_num_L1;
+	  statistics::Scalar welford_num_L2;
+	  statistics::Scalar welford_num_dir;
+	  statistics::Scalar welford_num_other;
 
 	  // Get more info
 	  statistics::Scalar pf_to_l1 = 0;
