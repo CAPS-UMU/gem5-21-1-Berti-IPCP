@@ -1154,24 +1154,24 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
 
   transition(PF_IS, Data, S) {
     u_writeDataToCache;
-    s_deallocateTBE;
     mp_markPrefetched;
+    s_deallocateTBE;
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
   }
 
   transition(PF_IS, Data_Exclusive, E) {
     u_writeDataToCache;
-    s_deallocateTBE;
     mp_markPrefetched;
+    s_deallocateTBE;
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
   }
 
   transition(PF_IS, Data_Stale, I) {
     u_writeDataToCache;
-    s_deallocateTBE;
     mp_markPrefetched;
+    s_deallocateTBE;
     ff_deallocateCacheBlock;
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
@@ -1179,24 +1179,24 @@ machine(MachineType:L0Cache, "MESI Directory L0 Cache")
 
   transition(PF_Inst_IS, Data, S) {
     u_writeInstToCache;
-    s_deallocateTBE;
     mp_markPrefetched;
+    s_deallocateTBE;
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
   }
 
   transition(PF_Inst_IS, Data_Exclusive, E) {
     u_writeInstToCache;
-    s_deallocateTBE;
     mp_markPrefetched;
+    s_deallocateTBE;
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
   }
 
   transition(PF_IE, Data_Exclusive, E) {
     u_writeDataToCache;
-    s_deallocateTBE;
     mp_markPrefetched;
+    s_deallocateTBE;
     o_popIncomingResponseQueue;
     kd_wakeUpDependents;
   }
