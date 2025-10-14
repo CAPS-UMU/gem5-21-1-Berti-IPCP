@@ -578,24 +578,36 @@ uint8_t Berti::get(uint64_t tag, std::vector<delta_t> &res)
   // 1) Collect deltas already assigned to a prefetch replacement level and
   // optionally promote deltas that are still at the initial replacement
   // level. We only attempt promotion when the tag's global confidence is at
-  // least 4 (to avoid noisy estimates). For deltas at getBertiI(), estimate
+  // least getLaunchMiddleConf(). For deltas at getBertiI(), estimate
   // per-delta confidence as (i.conf * 100) / entry->conf and compare the
-  // resulting integer percent against getConfidenceI() which is expected to
-  // be in the 0-100 range. If pct > getConfidenceI(), promote to L2.
+  // against getConfidenceI() expected to be in the 0-100 range.
+  // If pct > getConfidenceI(), promote to L2.
+  // Pre-compute confidence values that do not depend on per-delta
+  // measurements. These configuration parameters are constant for this
+  // invocation of the prefetcher, so hoist them out of the hot loops to
+  // avoid repeated calls and expensive divisions inside the delta loop.
+  const uint64_t confMax = rp_instance.getConfidenceMax();
+  const uint64_t confL1 = rp_instance.getConfidenceL1();
+
+  // Compute integer percent threshold for L1 promotion once. This replicates
+  // floor(confL1*100/confMax) using cross-multiplication to avoid division.
+  int l1_pct = static_cast<int>((confL1 * 100) / confMax);
+
   for (const auto &i : entry->deltas) {
     if (i.delta == 0) continue;
 
     // Keep deltas already assigned to a replacement level (not the R level)
-    if (i.rpl != rp_instance.getBertiR() || i.rpl != rp_instance.getBertiI()) {
+    if (i.rpl != rp_instance.getBertiR() && i.rpl != rp_instance.getBertiI()) {
       res.push_back(i);
       continue;
     }
 
     // Consider promotion for deltas at the initial replacement level
     if (i.rpl == rp_instance.getBertiI() && entry->conf >= rp_instance.getLaunchMiddleConf()) {
-      // compute integer percent (0-100)
-      int pct = static_cast<int>((i.conf * 100) / entry->conf);
-      if (pct >= static_cast<int>(rp_instance.getConfidenceI())) {
+      // Promote based on per-delta percentage compared to the precomputed L1 threshold.
+      // Replicates floor((i.conf*100)/entry->conf) >= l1_pct
+      // using cross-multiplication: i.conf*100 >= entry->conf * l1_pct
+      if ((uint64_t)i.conf * 100 >= (uint64_t)entry->conf * (uint64_t)l1_pct) {
         delta_t new_delta;
         new_delta.delta = i.delta;
         new_delta.rpl = rp_instance.getBertiL2();
@@ -611,21 +623,30 @@ uint8_t Berti::get(uint64_t tag, std::vector<delta_t> &res)
     // Defensive: ensure we won't divide by zero (entry->conf should be >= launch
     // threshold, but check anyway).
     if (entry->conf > 0) {
-      // Interpret per-delta accuracy as an integer percentage (0-100) and
-      // compare directly against integer configuration parameters.
+      // Hoist frequently used constants for the accuracy comparison. The
+      // thresholds are configuration parameters that do not depend on the
+      // per-delta confidence and thus can be read once.
+      const uint64_t entry_conf = entry->conf;
+      const uint64_t confMidL1 = rp_instance.getConfidenceMiddleL1();
+      const uint64_t confMidL2 = rp_instance.getConfidenceMiddleL2();
+
+      // Interpret per-delta accuracy as a percentage (0-100) and
+      // compare against the configured thresholds using cross-multiplication.
+      // Replicates floor((i.conf*100)/entry->conf) >= confMidL1 and
+      // floor((i.conf*100)/entry->conf) >= confMidL2 using:
+      // i.conf*100 >= entry_conf * confMidL1
+      // and
+      // i.conf*100 >= entry_conf * confMidL2
+      // Avoids expensive division in the inner loop
       for (const auto &i : entry->deltas) {
         if (i.delta == 0)
           continue;
-
-        // integer accuracy percent on 0-100 scale (floor division)
-        int accuracy_percent = static_cast<int>((i.conf * 100) / entry->conf);
-
-        if (accuracy_percent >= rp_instance.getConfidenceMiddleL1()) {
+        if ((uint64_t)i.conf * 100 >= entry_conf * confMidL1) {
           delta_t new_delta;
           new_delta.delta = i.delta;
           new_delta.rpl = rp_instance.getBertiL1();
           res.push_back(new_delta);
-        } else if (accuracy_percent >= rp_instance.getConfidenceMiddleL2()) {
+        } else if ((uint64_t)i.conf * 100 >= entry_conf * confMidL2) {
           delta_t new_delta;
           new_delta.delta = i.delta;
           new_delta.rpl = rp_instance.getBertiL2();
@@ -947,6 +968,7 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
 
   // MSHR load logging - histogram tracking and EMA calculation
   static uint64_t event_counter = 0;
+  static uint64_t mshr_counter = 0;
   event_counter++;
 
   // Update histogram - count occurrences of each MSHR load value
@@ -979,21 +1001,25 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
           << static_cast<uint64_t>(std::round(mshr_load_ema)) << std::endl;
     }
 
+    mshr_counter++;
     // Histogram logging - log histogram counts
-    if (mshr_load_histogram_log && mshr_load_histogram_log->stream()) {
-      for (int i = 0; i <= 100; i++) {
-        if (mshr_load_histogram[i] > 0) {
-          *mshr_load_histogram_log->stream() << i << "," <<
-              mshr_load_histogram[i] << std::endl;
+    // NOTE: Log this less frequently as the log can get very large
+    if ((mshr_counter % 10) == 0) {
+      if (mshr_load_histogram_log && mshr_load_histogram_log->stream()) {
+        for (int i = 0; i <= 100; i++) {
+          if (mshr_load_histogram[i] > 0) {
+            *mshr_load_histogram_log->stream() << i << "," <<
+                mshr_load_histogram[i] << std::endl;
+          }
         }
+        // Add separator between logging windows
+        *mshr_load_histogram_log->stream() << "---," <<
+            m_controller->curCycle() << std::endl;
       }
-      // Add separator between logging windows
-      *mshr_load_histogram_log->stream() << "---," <<
-          m_controller->curCycle() << std::endl;
+      // Flush the prefetch_log as it doesn't flush per line
+      if (prefetch_log && prefetch_log->stream())
+        prefetch_log->stream()->flush();
     }
-    // Flush the prefetch_log as it doesn't flush per line
-    if (prefetch_log && prefetch_log->stream())
-      prefetch_log->stream()->flush();
   }
 
   uint64_t ip_hash = berti->ip_hash(ip) & ip_mask;
