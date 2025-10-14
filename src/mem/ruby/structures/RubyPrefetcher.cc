@@ -480,7 +480,7 @@ void Berti::add(uint64_t tag, int64_t delta)
     delta_t new_delta;
     new_delta.delta = delta;
     new_delta.conf = rp_instance.getConfidenceInit();
-    new_delta.rpl = rp_instance.getBertiL2r();
+    new_delta.rpl = rp_instance.getBertiR();
     auto it = std::find_if(std::begin(entry->deltas), std::end(entry->deltas), [](const auto i){
       return (i.delta == 0);
     });
@@ -553,7 +553,7 @@ void Berti::add(uint64_t tag, int64_t delta)
   {
     entry->deltas.front().delta = delta;
     entry->deltas.front().conf = rp_instance.getConfidenceInit();
-    entry->deltas.front().rpl = rp_instance.getBertiL2r();
+    entry->deltas.front().rpl = rp_instance.getBertiR();
   }
 }
 
