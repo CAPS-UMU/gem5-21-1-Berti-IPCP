@@ -43,8 +43,10 @@
 
 #include <cassert>
 #include <cmath>
+#include <string>
 
 #include "base/bitfield.hh"
+#include "base/trace.hh"
 #include "debug/RubyPrefetcher.hh"
 #include "mem/ruby/slicc_interface/RubySlicc_ComponentMapping.hh"
 #include "mem/ruby/system/RubySystem.hh"
@@ -577,11 +579,8 @@ uint8_t Berti::get(uint64_t tag, std::vector<delta_t> &res)
 
   // 1) Collect deltas already assigned to a prefetch replacement level and
   // optionally promote deltas that are still at the initial replacement
-  // level. We only attempt promotion when the tag's global confidence is at
-  // least getLaunchMiddleConf(). For deltas at getBertiI(), estimate
-  // per-delta confidence as (i.conf * 100) / entry->conf and compare the
-  // against getConfidenceI() expected to be in the 0-100 range.
-  // If pct > getConfidenceI(), promote to L2.
+  // level.
+
   // Pre-compute confidence values that do not depend on per-delta
   // measurements. These configuration parameters are constant for this
   // invocation of the prefetcher, so hoist them out of the hot loops to
@@ -590,19 +589,21 @@ uint8_t Berti::get(uint64_t tag, std::vector<delta_t> &res)
   const uint64_t confL1 = rp_instance.getConfidenceL1();
 
   // Compute integer percent threshold for L1 promotion once. This replicates
-  // floor(confL1*100/confMax) using cross-multiplication to avoid division.
+  // floor(confL1*100/confMax) using cross-multiplication to avoid division
   int l1_pct = static_cast<int>((confL1 * 100) / confMax);
 
   for (const auto &i : entry->deltas) {
     if (i.delta == 0) continue;
 
-    // Keep deltas already assigned to a replacement level (not the R level)
+    // Keep deltas already assigned to L1/L2 replacement levels
     if (i.rpl != rp_instance.getBertiR() && i.rpl != rp_instance.getBertiI()) {
       res.push_back(i);
       continue;
     }
 
-    // Consider promotion for deltas at the initial replacement level
+    // Consider eager promotion for deltas at the initial (I) replacement level
+    // We only attempt promotion when the tag's global confidence is at
+    // least getLaunchMiddleConf()
     if (i.rpl == rp_instance.getBertiI() && entry->conf >= rp_instance.getLaunchMiddleConf()) {
       // Promote based on per-delta percentage compared to the precomputed L1 threshold.
       // Replicates floor((i.conf*100)/entry->conf) >= l1_pct
@@ -616,9 +617,7 @@ uint8_t Berti::get(uint64_t tag, std::vector<delta_t> &res)
     }
   }
 
-  // TODO Test enqueueing additional deltas if we have space in res vector.
-
-  // 2) If none found, consider promoting deltas based on estimated accuracy.
+  // 2) If no deltas were found, consider promoting any deltas based on estimated accuracy
   if (res.empty() && entry->conf >= rp_instance.getLaunchMiddleConf()) {
     // Defensive: ensure we won't divide by zero (entry->conf should be >= launch
     // threshold, but check anyway).
@@ -642,11 +641,13 @@ uint8_t Berti::get(uint64_t tag, std::vector<delta_t> &res)
         if (i.delta == 0)
           continue;
         if ((uint64_t)i.conf * 100 >= entry_conf * confMidL1) {
+          // Promote to L1 based on estimated accuracy
           delta_t new_delta;
           new_delta.delta = i.delta;
           new_delta.rpl = rp_instance.getBertiL1();
           res.push_back(new_delta);
         } else if ((uint64_t)i.conf * 100 >= entry_conf * confMidL2) {
+          // Promote to L2 based on estimated accuracy
           delta_t new_delta;
           new_delta.delta = i.delta;
           new_delta.rpl = rp_instance.getBertiL2();
@@ -853,7 +854,6 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
       confidence_init(p.confidence_init),
       confidence_l1(p.confidence_l1),
       confidence_l2(p.confidence_l2),
-      confidence_i(p.confidence_i),
       confidence_middle_l1(p.confidence_middle_l1),
       confidence_middle_l2(p.confidence_middle_l2),
       launch_middle_conf(p.launch_middle_conf),
@@ -867,6 +867,8 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
       latency_table_size(p.latency_table_size),
       l0_sets(p.l0_sets),
       l0_ways(p.l0_ways),
+      autotuneConfidenceStatsInitializedL1(false),
+      autotuneConfidenceStatsInitializedL2(false),
       rubyPrefetcherStats(this)
 {
   // Calculate latency table size
@@ -883,6 +885,30 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
   historyt = new HistoryTable(p.history_table_sets,p.history_table_ways,*this);
   berti = new Berti(p.berti_table_delta_size,*this);
 
+  autotuneParams.mode = p.auto_tune_mode;
+  autotuneParams.alphaFast = p.auto_tune_alpha_fast;
+  autotuneParams.alphaSlow = p.auto_tune_alpha_slow;
+  autotuneParams.detectMultiplier = p.auto_tune_detect_multiplier;
+  autotuneParams.clearMultiplier = p.auto_tune_clear_multiplier;
+  autotuneParams.neededConsecutive = p.auto_tune_needed_consecutive;
+  autotuneParams.initSamples = p.auto_tune_init_samples;
+  autotuneParams.increaseEveryNFills = p.auto_tune_increase_every_n_fills;
+  autotuneParams.decreaseEveryNFills = p.auto_tune_decrease_every_n_fills;
+  autotuneParams.maxConfSteps = p.auto_tune_max_conf_steps;
+  autotuneParams.confidenceStep = p.auto_tune_confidence_inc;
+  autotuneParams.debugEnable = p.auto_tune_debug_enable;
+
+  // Seed per-MachineType state with the baseline confidences so detection can
+  // later compare against the pre-autotune configuration without extra lookups.
+  autotuneState.fill(AutotuneCongState{});
+  autotuneSlowEwmaInitialized.fill(false);
+  for (auto &state : autotuneState) {
+    state.savedConfidenceL1 = confidence_l1;
+    state.savedConfidenceL2 = confidence_l2;
+  }
+
+  initializeConfidenceStats();
+
   // Initialize MSHR load logging
   mshr_load_sampled_log = simout.create(
       "mshr_load_sampled.csv", false, false);
@@ -892,6 +918,8 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
       "mshr_load_histogram.csv", false, false);
   // Prefetch logging: cycle, total_prefetches, target_level (L1/L2)
   prefetch_log = simout.create("prefetch_log.csv", false, false);
+  ewma_log = simout.create("ewma_log.csv", false, false);
+  confidence_log = simout.create("confidence_log.csv", false, false);
 
   if (mshr_load_sampled_log && mshr_load_sampled_log->stream()) {
     *mshr_load_sampled_log->stream() << "cycle,mshr_load" << std::endl;
@@ -905,21 +933,43 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
   if (prefetch_log && prefetch_log->stream()) {
     *prefetch_log->stream() << "cycle,total_prefetches,target_level" << std::endl;
   }
+  if (ewma_log && ewma_log->stream()) {
+    *ewma_log->stream()
+        << "cycle,reason,machine_type,slow_ewma,fast_ewma" << std::endl;
+  }
+  if (confidence_log && confidence_log->stream()) {
+    *confidence_log->stream() << "cycle,reason,confidence_l1,confidence_l2" << std::endl;
+  }
+
+  logAutotuneEwmaSnapshot("init");
+  logAutotuneConfidenceSnapshot("init");
 }
 
 RubyPrefetcher::~RubyPrefetcher() {
   // Close log files
   if (mshr_load_sampled_log) {
     simout.close(mshr_load_sampled_log);
+    mshr_load_sampled_log = nullptr;
   }
   if (mshr_load_averaged_log) {
     simout.close(mshr_load_averaged_log);
+    mshr_load_averaged_log = nullptr;
   }
   if (mshr_load_histogram_log) {
     simout.close(mshr_load_histogram_log);
+    mshr_load_histogram_log = nullptr;
   }
   if (prefetch_log) {
     simout.close(prefetch_log);
+    prefetch_log = nullptr;
+  }
+  if (ewma_log) {
+    simout.close(ewma_log);
+    ewma_log = nullptr;
+  }
+  if (confidence_log) {
+    simout.close(confidence_log);
+    confidence_log = nullptr;
   }
 }
 
@@ -951,10 +1001,553 @@ RubyPrefetcherStats::RubyPrefetcherStats(statistics::Group *parent)
       ADD_STAT(total_hits, "Cache Hits seen by Berti"),
       ADD_STAT(pf_hits, "Cache hits to lines prefetched by Berti"),
       ADD_STAT(late_pf, "Cache misses to lines prefetched by Berti"),
-      ADD_STAT(total_acceses, "Total calls to observeXX in Berti")
+      ADD_STAT(total_acceses, "Total calls to observeXX in Berti"),
+      ADD_STAT(autotune_congestion_events_l1,
+               "Autotune congestion assertions for fills sourced from L1"),
+      ADD_STAT(autotune_congestion_events_l2,
+               "Autotune congestion assertions for fills sourced from L2"),
+      ADD_STAT(autotune_congestion_events_dir,
+               "Autotune congestion assertions for fills sourced from directory/memory"),
+      ADD_STAT(autotune_congestion_events_other,
+               "Autotune congestion assertions for fills sourced from other machine types"),
+      ADD_STAT(autotune_congestion_clears_l1,
+               "Autotune congestion clear events for fills sourced from L1"),
+      ADD_STAT(autotune_congestion_clears_l2,
+               "Autotune congestion clear events for fills sourced from L2"),
+      ADD_STAT(autotune_congestion_clears_dir,
+               "Autotune congestion clear events for fills sourced from directory/memory"),
+      ADD_STAT(autotune_congestion_clears_other,
+               "Autotune congestion clear events for fills sourced from other machine types"),
+      ADD_STAT(autotune_congested_fills_l1,
+               "Autotune fills observed while L1 is marked congested"),
+      ADD_STAT(autotune_congested_fills_l2,
+               "Autotune fills observed while L2 is marked congested"),
+      ADD_STAT(autotune_congested_fills_dir,
+               "Autotune fills observed while directory/memory is marked congested"),
+      ADD_STAT(autotune_congested_fills_other,
+               "Autotune fills observed while other machine types are marked congested"),
+      ADD_STAT(autotune_confidence_increase_l1,
+               "Autotune confidence increases applied to L1 confidence"),
+      ADD_STAT(autotune_confidence_increase_l2,
+               "Autotune confidence increases applied to L2 confidence"),
+      ADD_STAT(autotune_confidence_decrease_l1,
+               "Autotune confidence decreases applied to L1 confidence"),
+      ADD_STAT(autotune_confidence_decrease_l2,
+               "Autotune confidence decreases applied to L2 confidence"),
+      ADD_STAT(autotune_confidence_min_l1,
+               "Minimum L1 confidence observed during autotuning"),
+      ADD_STAT(autotune_confidence_max_l1,
+               "Maximum L1 confidence observed during autotuning"),
+      ADD_STAT(autotune_confidence_min_l2,
+               "Minimum L2 confidence observed during autotuning"),
+      ADD_STAT(autotune_confidence_max_l2,
+               "Maximum L2 confidence observed during autotuning"),
+      ADD_STAT(autotune_slow_ewma_min_l1,
+               "Minimum slow-EWMA latency observed for L1 sources"),
+      ADD_STAT(autotune_slow_ewma_min_l2,
+               "Minimum slow-EWMA latency observed for L2 sources"),
+      ADD_STAT(autotune_slow_ewma_min_dir,
+               "Minimum slow-EWMA latency observed for directory/memory sources"),
+      ADD_STAT(autotune_slow_ewma_min_other,
+               "Minimum slow-EWMA latency observed for other sources"),
+      ADD_STAT(autotune_slow_ewma_max_l1,
+               "Maximum slow-EWMA latency observed for L1 sources"),
+      ADD_STAT(autotune_slow_ewma_max_l2,
+               "Maximum slow-EWMA latency observed for L2 sources"),
+      ADD_STAT(autotune_slow_ewma_max_dir,
+               "Maximum slow-EWMA latency observed for directory/memory sources"),
+      ADD_STAT(autotune_slow_ewma_max_other,
+               "Maximum slow-EWMA latency observed for other sources")
 {
 //  auto average = ((1.0*average_issued)/average_num);
 //  ADD_STAT(average, "Average issued");
+}
+
+
+void
+RubyPrefetcher::logAutotuneEvent(const char *event, MachineType mt,
+                                 const AutotuneCongState &state)
+{
+  // Lightweight tracing hook: only print when explicit autotune debug output
+  // is requested so production runs remain silent.
+  if (!autotuneParams.debugEnable)
+    return;
+
+  const std::string mtName = MachineType_to_string(mt);
+  const uint64_t cycle = m_controller ? m_controller->curCycle() : 0;
+#if TRACING_ON
+  DPRINTF(RubyPrefetcher,
+          "Autotune %s for %s: fast=%.2f slow=%.2f samples=%llu consec=%llu cycle=%llu\n",
+          event, mtName.c_str(), state.fastEwma, state.slowEwma,
+          static_cast<unsigned long long>(state.samplesSeen),
+          static_cast<unsigned long long>(state.consecutiveAboveThreshold),
+          static_cast<unsigned long long>(cycle));
+#endif
+}
+
+bool
+RubyPrefetcher::autotuneIncreaseConfidence(MachineType mt,
+                                           AutotuneCongState &state)
+{
+  if (!autotuneAdjustmentEnabled())
+    return false;
+
+  auto tryIncrease = [&](uint64_t &target, uint64_t baseline,
+                         uint64_t &extraSteps) {
+    const uint64_t step = autotuneParams.confidenceStep;
+
+    if (autotuneParams.maxConfSteps == 0 || step == 0)
+      return false;
+
+    const uint64_t maxBySteps = baseline +
+        autotuneParams.maxConfSteps * step;
+    const uint64_t maxAllowed = std::min<uint64_t>(confidence_max, maxBySteps);
+
+    if (target >= maxAllowed)
+      return false;
+
+    if (extraSteps >= autotuneParams.maxConfSteps)
+      return false;
+
+    uint64_t newValue = target + step;
+    if (newValue > maxAllowed)
+      newValue = maxAllowed;
+
+    if (newValue == target)
+      return false;
+
+    target = newValue;
+    extraSteps = std::min<uint64_t>(extraSteps + 1,
+                                    autotuneParams.maxConfSteps);
+    return true;
+  };
+
+  const bool l1Changed = tryIncrease(confidence_l1, state.savedConfidenceL1,
+                                     state.extraConfStepsL1);
+  const bool l2Changed = tryIncrease(confidence_l2, state.savedConfidenceL2,
+                                     state.extraConfStepsL2);
+
+  if (!(l1Changed || l2Changed))
+    return false;
+
+  if (l1Changed) {
+    rubyPrefetcherStats.autotune_confidence_increase_l1++;
+    updateConfidenceMinMax(confidence_l1,
+        autotuneConfidenceStatsInitializedL1,
+        rubyPrefetcherStats.autotune_confidence_min_l1,
+        rubyPrefetcherStats.autotune_confidence_max_l1);
+  }
+  if (l2Changed) {
+    rubyPrefetcherStats.autotune_confidence_increase_l2++;
+    updateConfidenceMinMax(confidence_l2,
+        autotuneConfidenceStatsInitializedL2,
+        rubyPrefetcherStats.autotune_confidence_min_l2,
+        rubyPrefetcherStats.autotune_confidence_max_l2);
+  }
+
+  state.lastChangeCycle = m_controller ? m_controller->curCycle() : 0;
+  logAutotuneEvent("increase_conf", mt, state);
+  logAutotuneConfidenceSnapshot("increase");
+  logAutotuneEwmaSnapshot(mt, "increase", state);
+  return true;
+}
+
+bool
+RubyPrefetcher::autotuneDecreaseConfidence(MachineType mt,
+                                           AutotuneCongState &state)
+{
+  if (!autotuneAdjustmentEnabled())
+    return false;
+
+  auto tryDecrease = [&](uint64_t &target, uint64_t baseline,
+                         uint64_t &extraSteps) {
+    const uint64_t step = autotuneParams.confidenceStep;
+    if (step == 0)
+      return false;
+
+    if (extraSteps == 0) {
+      if (target < baseline)
+        target = baseline;
+      return false;
+    }
+
+    if (target <= baseline) {
+      extraSteps = 0;
+      if (target < baseline)
+        target = baseline;
+      return false;
+    }
+
+    uint64_t newValue = (target > step) ? target - step : baseline;
+    if (newValue < baseline)
+      newValue = baseline;
+
+    if (newValue == target) {
+      if (target <= baseline)
+        extraSteps = 0;
+      return false;
+    }
+
+    target = newValue;
+    if (extraSteps > 0)
+      extraSteps--;
+    if (target <= baseline)
+      extraSteps = 0;
+    return true;
+  };
+
+  const bool l1Changed = tryDecrease(confidence_l1, state.savedConfidenceL1,
+                                     state.extraConfStepsL1);
+  const bool l2Changed = tryDecrease(confidence_l2, state.savedConfidenceL2,
+                                     state.extraConfStepsL2);
+
+  if (!(l1Changed || l2Changed))
+    return false;
+
+  if (l1Changed) {
+    rubyPrefetcherStats.autotune_confidence_decrease_l1++;
+    updateConfidenceMinMax(confidence_l1,
+        autotuneConfidenceStatsInitializedL1,
+        rubyPrefetcherStats.autotune_confidence_min_l1,
+        rubyPrefetcherStats.autotune_confidence_max_l1);
+  }
+  if (l2Changed) {
+    rubyPrefetcherStats.autotune_confidence_decrease_l2++;
+    updateConfidenceMinMax(confidence_l2,
+        autotuneConfidenceStatsInitializedL2,
+        rubyPrefetcherStats.autotune_confidence_min_l2,
+        rubyPrefetcherStats.autotune_confidence_max_l2);
+  }
+
+  state.lastChangeCycle = m_controller ? m_controller->curCycle() : 0;
+  logAutotuneEvent("decrease_conf", mt, state);
+  logAutotuneConfidenceSnapshot("decrease");
+  logAutotuneEwmaSnapshot(mt, "decrease", state);
+  return true;
+}
+
+double
+RubyPrefetcher::autotuneRestoreThreshold(const AutotuneCongState &state) const
+{
+  if (state.savedSlowBeforeCongestion <= 0.0)
+    return state.slowEwma;
+
+  static constexpr double restoreMultiplier = 1.05;
+  return state.savedSlowBeforeCongestion * restoreMultiplier;
+}
+
+void
+RubyPrefetcher::updateConfidenceMinMax(uint64_t value, bool &initialized,
+    statistics::Scalar &minStat, statistics::Scalar &maxStat)
+{
+  if (!initialized) {
+    minStat = value;
+    maxStat = value;
+    initialized = true;
+    return;
+  }
+
+  const double currentMin = minStat.value();
+  const double currentMax = maxStat.value();
+
+  if (value < currentMin)
+    minStat = value;
+  if (value > currentMax)
+    maxStat = value;
+}
+
+void
+RubyPrefetcher::initializeConfidenceStats()
+{
+  updateConfidenceMinMax(confidence_l1, autotuneConfidenceStatsInitializedL1,
+      rubyPrefetcherStats.autotune_confidence_min_l1,
+      rubyPrefetcherStats.autotune_confidence_max_l1);
+  updateConfidenceMinMax(confidence_l2, autotuneConfidenceStatsInitializedL2,
+      rubyPrefetcherStats.autotune_confidence_min_l2,
+      rubyPrefetcherStats.autotune_confidence_max_l2);
+}
+
+void
+RubyPrefetcher::logAutotuneEwmaSnapshot(const char *reason)
+{
+  if (!m_controller || !ewma_log || !ewma_log->stream())
+    return;
+
+  const uint64_t cycle = m_controller->curCycle();
+  const char *why = reason ? reason : "";
+
+  for (int idx = 0; idx < static_cast<int>(MachineType_NUM); ++idx) {
+    const MachineType mt = static_cast<MachineType>(idx);
+    const AutotuneCongState &state = autotuneState[idx];
+    const std::string mtName = MachineType_to_string(mt);
+    if (state.slowEwma > 0.0) {
+      *ewma_log->stream() << cycle << ',' << why << ','
+          << mtName << ',' << state.slowEwma << ','
+          << state.fastEwma << '\n';
+    }
+  }
+}
+
+void
+RubyPrefetcher::logAutotuneEwmaSnapshot(MachineType mt, const char *reason,
+    const AutotuneCongState &state)
+{
+  if (!m_controller || !ewma_log || !ewma_log->stream())
+    return;
+
+  const uint64_t cycle = m_controller->curCycle();
+  const char *why = reason ? reason : "";
+  const std::string mtName = MachineType_to_string(mt);
+  *ewma_log->stream() << cycle << ',' << why << ','
+      << mtName << ',' << state.slowEwma << ','
+      << state.fastEwma << '\n';
+}
+
+void
+RubyPrefetcher::logAutotuneConfidenceSnapshot(const char *reason)
+{
+  if (!m_controller || !confidence_log || !confidence_log->stream())
+    return;
+
+  const uint64_t cycle = m_controller->curCycle();
+  const char *why = reason ? reason : "";
+  *confidence_log->stream() << cycle << ',' << why << ','
+      << confidence_l1 << ',' << confidence_l2 << '\n';
+}
+
+void
+RubyPrefetcher::updateAutotuneOnFill(MachineType mt, uint64_t latency)
+{
+  // Skip all bookkeeping if autotune is disabled. This keeps the hot path
+  // identical to the legacy behaviour when mode==0.
+  if (!autotuneDetectionEnabled())
+    return;
+
+  const size_t index = static_cast<size_t>(mt);
+  if (index >= autotuneState.size())
+    return;
+
+  AutotuneCongState &state = autotuneState[index];
+
+  auto incrementEvent = [&]() {
+    switch (mt) {
+      case MachineType_L1Cache:
+        rubyPrefetcherStats.autotune_congestion_events_l1++;
+        break;
+      case MachineType_L2Cache:
+        rubyPrefetcherStats.autotune_congestion_events_l2++;
+        break;
+      case MachineType_Directory:
+        rubyPrefetcherStats.autotune_congestion_events_dir++;
+        break;
+      default:
+        rubyPrefetcherStats.autotune_congestion_events_other++;
+        break;
+    }
+  };
+
+  auto incrementClear = [&]() {
+    switch (mt) {
+      case MachineType_L1Cache:
+        rubyPrefetcherStats.autotune_congestion_clears_l1++;
+        break;
+      case MachineType_L2Cache:
+        rubyPrefetcherStats.autotune_congestion_clears_l2++;
+        break;
+      case MachineType_Directory:
+        rubyPrefetcherStats.autotune_congestion_clears_dir++;
+        break;
+      default:
+        rubyPrefetcherStats.autotune_congestion_clears_other++;
+        break;
+    }
+  };
+
+  auto incrementFill = [&]() {
+    switch (mt) {
+      case MachineType_L1Cache:
+        rubyPrefetcherStats.autotune_congested_fills_l1++;
+        break;
+      case MachineType_L2Cache:
+        rubyPrefetcherStats.autotune_congested_fills_l2++;
+        break;
+      case MachineType_Directory:
+        rubyPrefetcherStats.autotune_congested_fills_dir++;
+        break;
+      default:
+        rubyPrefetcherStats.autotune_congested_fills_other++;
+        break;
+    }
+  };
+
+  // Zero-latency fills come from short-circuit paths; track congestion tenure
+  // counters but avoid skewing the EWMA with bogus samples.
+  if (latency == 0) {
+    if (state.congested) {
+      state.fillsSinceLastAdjustment++;
+      incrementFill();
+    } else {
+      state.fillsSinceLastAdjustment = 0;
+    }
+    return;
+  }
+
+  state.samplesSeen++;
+
+  const double sample = static_cast<double>(latency);
+
+  // First sample establishes both moving-average seeds to avoid a cold start.
+  if (state.samplesSeen == 1) {
+    state.fastEwma = sample;
+    state.slowEwma = sample;
+    return;
+  }
+
+  auto clampAlpha = [](double value) {
+    if (value < 0.0)
+      return 0.0;
+    if (value > 1.0)
+      return 1.0;
+    return value;
+  };
+
+  const double alphaFast = clampAlpha(autotuneParams.alphaFast);
+  const double alphaSlow = clampAlpha(autotuneParams.alphaSlow);
+
+  state.fastEwma = alphaFast * sample + (1.0 - alphaFast) * state.fastEwma;
+  state.slowEwma = alphaSlow * sample + (1.0 - alphaSlow) * state.slowEwma;
+
+  // Defer congestion checks until the slow EWMA has a stable baseline.
+  if (state.samplesSeen < autotuneParams.initSamples) {
+    state.consecutiveAboveThreshold = 0;
+    if (state.congested) {
+      state.fillsSinceLastAdjustment++;
+      incrementFill();
+    } else {
+      state.fillsSinceLastAdjustment = 0;
+    }
+    return;
+  }
+
+  // Guard against divide-by-zero when the baseline collapses during warm-up.
+  if (state.slowEwma <= 0.0) {
+    state.consecutiveAboveThreshold = 0;
+    if (state.congested) {
+      state.fillsSinceLastAdjustment++;
+      incrementFill();
+    } else {
+      state.fillsSinceLastAdjustment = 0;
+    }
+    return;
+  }
+
+  auto updateSlowStats = [&](statistics::Scalar &minStat,
+                             statistics::Scalar &maxStat) {
+    if (!autotuneSlowEwmaInitialized[index]) {
+      minStat = state.slowEwma;
+      maxStat = state.slowEwma;
+      autotuneSlowEwmaInitialized[index] = true;
+      return;
+    }
+    if (state.slowEwma < minStat.value()) {
+      minStat = state.slowEwma;
+    }
+    if (state.slowEwma > maxStat.value()) {
+      maxStat = state.slowEwma;
+    }
+  };
+
+  switch (mt) {
+    case MachineType_L1Cache:
+      updateSlowStats(rubyPrefetcherStats.autotune_slow_ewma_min_l1,
+                      rubyPrefetcherStats.autotune_slow_ewma_max_l1);
+      break;
+    case MachineType_L2Cache:
+      updateSlowStats(rubyPrefetcherStats.autotune_slow_ewma_min_l2,
+                      rubyPrefetcherStats.autotune_slow_ewma_max_l2);
+      break;
+    case MachineType_Directory:
+      updateSlowStats(rubyPrefetcherStats.autotune_slow_ewma_min_dir,
+                      rubyPrefetcherStats.autotune_slow_ewma_max_dir);
+      break;
+    default:
+      updateSlowStats(rubyPrefetcherStats.autotune_slow_ewma_min_other,
+                      rubyPrefetcherStats.autotune_slow_ewma_max_other);
+      break;
+  }
+
+  const double detectThreshold = autotuneParams.detectMultiplier * state.slowEwma;
+  const double clearThreshold = autotuneParams.clearMultiplier * state.slowEwma;
+
+  const bool above = state.fastEwma > detectThreshold;
+  const bool below = state.fastEwma < clearThreshold;
+
+  if (above) {
+    state.consecutiveAboveThreshold++;
+  } else if (below) {
+    state.consecutiveAboveThreshold = 0;
+  }
+
+  if (!state.congested && above &&
+      state.consecutiveAboveThreshold >= autotuneParams.neededConsecutive) {
+    // Mark the hierarchy level as congested and snapshot the baseline so we
+    // can later emit stats (and eventually adjust confidence values).
+    state.congested = true;
+    state.lastChangeCycle = m_controller ? m_controller->curCycle() : 0;
+    state.fillsSinceLastAdjustment = 0;
+    state.extraConfStepsL1 = 0;
+    state.extraConfStepsL2 = 0;
+    state.savedSlowBeforeCongestion = state.slowEwma;
+    state.savedConfidenceL1 = confidence_l1;
+    state.savedConfidenceL2 = confidence_l2;
+    incrementEvent();
+    logAutotuneEvent("assert", mt, state);
+    logAutotuneConfidenceSnapshot("assert");
+    logAutotuneEwmaSnapshot(mt, "assert", state);
+  } else if (state.congested && below) {
+    // Latency returned near the baseline; drop back to the non-congested
+    // state and reset counters so hysteresis can start over.
+    state.congested = false;
+    state.lastChangeCycle = m_controller ? m_controller->curCycle() : 0;
+    state.consecutiveAboveThreshold = 0;
+    state.fillsSinceLastAdjustment = 0;
+    incrementClear();
+    logAutotuneEvent("clear", mt, state);
+    logAutotuneConfidenceSnapshot("clear");
+    logAutotuneEwmaSnapshot(mt, "clear", state);
+  }
+
+  if (state.congested) {
+    // Count how many fills arrive while congested for post-run diagnostics.
+    state.fillsSinceLastAdjustment++;
+    incrementFill();
+    if (autotuneAdjustmentEnabled() &&
+        state.samplesSeen >= autotuneParams.initSamples &&
+        state.slowEwma > 0.0 &&
+        autotuneParams.confidenceStep > 0 &&
+        state.fillsSinceLastAdjustment >= autotuneParams.increaseEveryNFills &&
+        (state.extraConfStepsL1 < autotuneParams.maxConfSteps ||
+         state.extraConfStepsL2 < autotuneParams.maxConfSteps)) {
+      if (autotuneIncreaseConfidence(mt, state)) {
+        state.fillsSinceLastAdjustment = 0;
+      }
+    }
+  } else {
+    if (autotuneAdjustmentEnabled() &&
+        autotuneParams.confidenceStep > 0 &&
+        (state.extraConfStepsL1 > 0 || state.extraConfStepsL2 > 0)) {
+      state.fillsSinceLastAdjustment++;
+      const double restoreThreshold = autotuneRestoreThreshold(state);
+      if (state.fillsSinceLastAdjustment >= autotuneParams.decreaseEveryNFills &&
+          state.slowEwma <= restoreThreshold) {
+        if (autotuneDecreaseConfidence(mt, state)) {
+          state.fillsSinceLastAdjustment = 0;
+        }
+      }
+    } else {
+      state.fillsSinceLastAdjustment = 0;
+    }
+  }
 }
 
 
@@ -1000,6 +1593,9 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
       *mshr_load_averaged_log->stream() << m_controller->curCycle() << ","
           << static_cast<uint64_t>(std::round(mshr_load_ema)) << std::endl;
     }
+
+    logAutotuneEwmaSnapshot("periodic");
+    logAutotuneConfidenceSnapshot("periodic");
 
     mshr_counter++;
     // Histogram logging - log histogram counts
@@ -1186,6 +1782,8 @@ void RubyPrefetcher::prefetcher_cache_fill(Addr addr, bool prefetch, int set, in
       update_welford(*level_avg_ptr, *level_num_ptr);
     }
   }
+
+  updateAutotuneOnFill(src_mt, latency);
 
   // Add to the shadow cache
 //  uint32_t set = 0, way = 0;

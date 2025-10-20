@@ -45,6 +45,7 @@
 // Implements Power 4 like prefetching
 
 #include <bitset>
+#include <array>
 
 #include "base/circular_queue.hh"
 #include "base/output.hh"
@@ -268,6 +269,40 @@ namespace ruby
       uint64_t ip_hash(uint64_t ip);
   };
 
+  // Tunable knobs copied from Python params so runtime checks stay cheap.
+  struct AutotuneParams
+  {
+    int mode = 0;
+    double alphaFast = 0.0;
+    double alphaSlow = 0.0;
+    double detectMultiplier = 0.0;
+    double clearMultiplier = 0.0;
+    uint64_t neededConsecutive = 0;
+    uint64_t initSamples = 0;
+    uint64_t increaseEveryNFills = 0;
+    uint64_t decreaseEveryNFills = 0;
+    uint64_t maxConfSteps = 0;
+    uint64_t confidenceStep = 0;
+    bool debugEnable = false;
+  };
+
+  // Per-machine-type congestion bookkeeping shared by detection and tuning.
+  struct AutotuneCongState
+  {
+    double fastEwma = 0.0;
+    double slowEwma = 0.0;
+    uint64_t samplesSeen = 0;
+    uint64_t consecutiveAboveThreshold = 0;
+    bool congested = false;
+  uint64_t fillsSinceLastAdjustment = 0;
+  uint64_t extraConfStepsL1 = 0;
+  uint64_t extraConfStepsL2 = 0;
+    uint64_t savedConfidenceL1 = 0;
+    uint64_t savedConfidenceL2 = 0;
+    double savedSlowBeforeCongestion = 0.0;
+    uint64_t lastChangeCycle = 0;
+  };
+
 class RubyPrefetcher : public SimObject
 {
     public:
@@ -296,7 +331,11 @@ class RubyPrefetcher : public SimObject
          */
         void print(std::ostream& out) const;
         void setController(AbstractController *_ctrl)
-        { m_controller = _ctrl; }
+        {
+            m_controller = _ctrl;
+            logAutotuneEwmaSnapshot("attach");
+            logAutotuneConfidenceSnapshot("attach");
+        }
 
         void insertReplacement(Addr evicted_addr) {
 	  assert(last_replaced_addr == 0);
@@ -324,7 +363,6 @@ class RubyPrefetcher : public SimObject
         uint64_t getConfidenceInit() const { return confidence_init; }
         uint64_t getConfidenceL1() const { return confidence_l1; }
         uint64_t getConfidenceL2() const { return confidence_l2; }
-        uint64_t getConfidenceI() const { return confidence_i; }
         uint64_t getConfidenceMiddleL1() const { return confidence_middle_l1; }
         uint64_t getConfidenceMiddleL2() const { return confidence_middle_l2; }
         uint64_t getLaunchMiddleConf() const { return launch_middle_conf; }
@@ -342,6 +380,24 @@ class RubyPrefetcher : public SimObject
         void setMSHRLoad(int current_mshr_load) { mshr_load = current_mshr_load; }
 
     private:
+
+        bool autotuneDetectionEnabled() const { return autotuneParams.mode != 0; }
+        bool autotuneAdjustmentEnabled() const { return autotuneParams.mode == 2; }
+        // Update the congestion tracker when a cache fill latency is observed.
+        void updateAutotuneOnFill(MachineType mt, uint64_t latency);
+        // Emit optional debug logs for congestion transitions.
+        void logAutotuneEvent(const char *event, MachineType mt,
+                              const AutotuneCongState &state);
+        bool autotuneIncreaseConfidence(MachineType mt, AutotuneCongState &state);
+        bool autotuneDecreaseConfidence(MachineType mt, AutotuneCongState &state);
+        double autotuneRestoreThreshold(const AutotuneCongState &state) const;
+        void initializeConfidenceStats();
+        void updateConfidenceMinMax(uint64_t value, bool &initialized,
+                                    statistics::Scalar &minStat, statistics::Scalar &maxStat);
+        void logAutotuneEwmaSnapshot(const char *reason);
+        void logAutotuneEwmaSnapshot(MachineType mt, const char *reason,
+                                     const AutotuneCongState &state);
+        void logAutotuneConfidenceSnapshot(const char *reason);
 
         /// determine the page aligned address
         Addr pageAddress(Addr addr) const;
@@ -367,7 +423,6 @@ class RubyPrefetcher : public SimObject
 
         uint64_t confidence_l1;
         uint64_t confidence_l2;
-        uint64_t confidence_i;
 
         uint64_t confidence_middle_l1;
         uint64_t confidence_middle_l2;
@@ -419,22 +474,59 @@ class RubyPrefetcher : public SimObject
 	  statistics::Scalar total_hits = 0;
 	  statistics::Scalar pf_hits = 0;
 	  statistics::Scalar late_pf = 0;
-	  statistics::Scalar total_acceses = 0;
+          statistics::Scalar total_acceses = 0;
+          statistics::Scalar autotune_congestion_events_l1 = 0;
+          statistics::Scalar autotune_congestion_events_l2 = 0;
+          statistics::Scalar autotune_congestion_events_dir = 0;
+          statistics::Scalar autotune_congestion_events_other = 0;
+          statistics::Scalar autotune_congestion_clears_l1 = 0;
+          statistics::Scalar autotune_congestion_clears_l2 = 0;
+          statistics::Scalar autotune_congestion_clears_dir = 0;
+          statistics::Scalar autotune_congestion_clears_other = 0;
+          statistics::Scalar autotune_congested_fills_l1 = 0;
+          statistics::Scalar autotune_congested_fills_l2 = 0;
+          statistics::Scalar autotune_congested_fills_dir = 0;
+          statistics::Scalar autotune_congested_fills_other = 0;
+          statistics::Scalar autotune_confidence_increase_l1 = 0;
+          statistics::Scalar autotune_confidence_increase_l2 = 0;
+          statistics::Scalar autotune_confidence_decrease_l1 = 0;
+          statistics::Scalar autotune_confidence_decrease_l2 = 0;
+          statistics::Scalar autotune_confidence_min_l1 = 0;
+          statistics::Scalar autotune_confidence_max_l1 = 0;
+          statistics::Scalar autotune_confidence_min_l2 = 0;
+          statistics::Scalar autotune_confidence_max_l2 = 0;
+          statistics::Scalar autotune_slow_ewma_min_l1 = 0;
+          statistics::Scalar autotune_slow_ewma_min_l2 = 0;
+          statistics::Scalar autotune_slow_ewma_min_dir = 0;
+          statistics::Scalar autotune_slow_ewma_min_other = 0;
+          statistics::Scalar autotune_slow_ewma_max_l1 = 0;
+          statistics::Scalar autotune_slow_ewma_max_l2 = 0;
+          statistics::Scalar autotune_slow_ewma_max_dir = 0;
+          statistics::Scalar autotune_slow_ewma_max_other = 0;
 
         } rubyPrefetcherStats;
 
-        AbstractController *m_controller;
+        AbstractController *m_controller = nullptr;
         LatencyTable *latencyt;
         ShadowCache *scache;
         HistoryTable *historyt;
         Berti *berti;
 
+        // Cached autotune configuration and per-source congestion state.
+        AutotuneParams autotuneParams;
+        std::array<AutotuneCongState, MachineType_NUM> autotuneState;
+        std::array<bool, MachineType_NUM> autotuneSlowEwmaInitialized;
+        bool autotuneConfidenceStatsInitializedL1;
+        bool autotuneConfidenceStatsInitializedL2;
+        OutputStream *ewma_log = nullptr;
+        OutputStream *confidence_log = nullptr;
+
         // MSHR load logging members
         OutputStream *mshr_load_sampled_log;
         OutputStream *mshr_load_averaged_log;
         OutputStream *mshr_load_histogram_log;
-  // Prefetch log stream: records cycle, total prefetches, target level
-  OutputStream *prefetch_log = nullptr;
+        // Prefetch log stream: records cycle, total prefetches, target level
+        OutputStream *prefetch_log = nullptr;
         uint64_t mshr_load_sum = 0;
         uint64_t mshr_load_count = 0;
         const uint64_t LOG_WINDOW = 1000;
