@@ -123,6 +123,10 @@ class RubyPrefetcher(SimObject):
     auto_tune_debug_enable = Param.Bool(False,
         "Enable detailed autotune debug logging even in optimized builds")
 
+    # CSV logging for prefetcher state traces (prefetch decisions, EWMA values, confidence values, etc.)
+    enable_csv_logging = Param.Bool(False,
+        "Enable CSV logging for prefetch, EWMA, and confidence traces")
+
 class Prefetcher(RubyPrefetcher):
     """DEPRECATED"""
     pass

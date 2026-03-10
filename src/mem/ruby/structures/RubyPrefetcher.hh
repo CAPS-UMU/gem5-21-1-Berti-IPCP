@@ -381,6 +381,7 @@ class RubyPrefetcher : public SimObject
 
     private:
 
+        bool csvLoggingEnabled() const { return enable_csv_logging; }
         bool autotuneDetectionEnabled() const { return autotuneParams.mode != 0; }
         bool autotuneAdjustmentEnabled() const { return autotuneParams.mode == 2; }
         // Update the congestion tracker when a cache fill latency is observed.
@@ -441,6 +442,7 @@ class RubyPrefetcher : public SimObject
         uint64_t latency_table_size;
         uint64_t l0_sets;
         uint64_t l0_ways;
+        bool enable_csv_logging;
 
         struct RubyPrefetcherStats : public statistics::Group
         {
@@ -522,9 +524,9 @@ class RubyPrefetcher : public SimObject
         OutputStream *confidence_log = nullptr;
 
         // MSHR load logging members
-        OutputStream *mshr_load_sampled_log;
-        OutputStream *mshr_load_averaged_log;
-        OutputStream *mshr_load_histogram_log;
+        OutputStream *mshr_load_sampled_log = nullptr;
+        OutputStream *mshr_load_averaged_log = nullptr;
+        OutputStream *mshr_load_histogram_log = nullptr;
         // Prefetch log stream: records cycle, total prefetches, target level
         OutputStream *prefetch_log = nullptr;
         uint64_t mshr_load_sum = 0;

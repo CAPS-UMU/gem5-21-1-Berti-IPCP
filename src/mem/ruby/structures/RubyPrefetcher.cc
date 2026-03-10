@@ -867,6 +867,7 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
       latency_table_size(p.latency_table_size),
       l0_sets(p.l0_sets),
       l0_ways(p.l0_ways),
+      enable_csv_logging(p.enable_csv_logging),
       autotuneConfidenceStatsInitializedL1(false),
       autotuneConfidenceStatsInitializedL2(false),
       rubyPrefetcherStats(this)
@@ -909,17 +910,19 @@ RubyPrefetcher::RubyPrefetcher(const Params &p)
 
   initializeConfidenceStats();
 
-  // Initialize MSHR load logging
-  mshr_load_sampled_log = simout.create(
-      "mshr_load_sampled.csv", false, false);
-  mshr_load_averaged_log = simout.create(
-      "mshr_load_averaged.csv", false, false);
-  mshr_load_histogram_log = simout.create(
-      "mshr_load_histogram.csv", false, false);
-  // Prefetch logging: cycle, total_prefetches, target_level (L1/L2)
-  prefetch_log = simout.create("prefetch_log.csv", false, false);
-  ewma_log = simout.create("ewma_log.csv", false, false);
-  confidence_log = simout.create("confidence_log.csv", false, false);
+  if (csvLoggingEnabled()) {
+    // Initialize CSV logs only when explicitly enabled.
+    mshr_load_sampled_log = simout.create(
+        "mshr_load_sampled.csv", false, false);
+    mshr_load_averaged_log = simout.create(
+        "mshr_load_averaged.csv", false, false);
+    mshr_load_histogram_log = simout.create(
+        "mshr_load_histogram.csv", false, false);
+    // Prefetch logging: cycle, total_prefetches, target_level (L1/L2)
+    prefetch_log = simout.create("prefetch_log.csv", false, false);
+    ewma_log = simout.create("ewma_log.csv", false, false);
+    confidence_log = simout.create("confidence_log.csv", false, false);
+  }
 
   if (mshr_load_sampled_log && mshr_load_sampled_log->stream()) {
     *mshr_load_sampled_log->stream() << "cycle,mshr_load" << std::endl;
@@ -1559,62 +1562,64 @@ void RubyPrefetcher::prefetcher_cache_operate(Addr addr, Addr ip, bool cache_hit
   if (line_addr == 0) return;
   rubyPrefetcherStats.total_acceses++;
 
-  // MSHR load logging - histogram tracking and EMA calculation
-  static uint64_t event_counter = 0;
-  static uint64_t mshr_counter = 0;
-  event_counter++;
+  if (csvLoggingEnabled()) {
+    // MSHR load logging - histogram tracking and EMA calculation
+    static uint64_t event_counter = 0;
+    static uint64_t mshr_counter = 0;
+    event_counter++;
 
-  // Update histogram - count occurrences of each MSHR load value
-  if (mshr_load >= 0 && mshr_load <= 100) {
-    mshr_load_histogram[mshr_load]++;
-  }
-
-  // Calculate exponential moving average (EMA) for MSHR load
-  // EMA = alpha * current_value + (1-alpha) * previous_ema
-  // Using alpha = 2/(N+1) where N=1000 for EMA over ~1000 samples
-  double alpha = 2.0 / (LOG_WINDOW + 1);
-  if (!ema_initialized) {
-    mshr_load_ema = mshr_load;
-    ema_initialized = true;
-  } else {
-    mshr_load_ema = alpha * mshr_load + (1.0 - alpha) * mshr_load_ema;
-  }
-
-  // Log every 1000th event
-  if (event_counter % LOG_WINDOW == 0) {
-    // Sampled logging - log the current instantaneous MSHR load
-    if (mshr_load_sampled_log && mshr_load_sampled_log->stream()) {
-      *mshr_load_sampled_log->stream() << m_controller->curCycle() << ","
-          << mshr_load << std::endl;
+    // Update histogram - count occurrences of each MSHR load value
+    if (mshr_load >= 0 && mshr_load <= 100) {
+      mshr_load_histogram[mshr_load]++;
     }
 
-    // EMA logging - log the exponential moving average MSHR load
-    if (mshr_load_averaged_log && mshr_load_averaged_log->stream()) {
-      *mshr_load_averaged_log->stream() << m_controller->curCycle() << ","
-          << static_cast<uint64_t>(std::round(mshr_load_ema)) << std::endl;
+    // Calculate exponential moving average (EMA) for MSHR load
+    // EMA = alpha * current_value + (1-alpha) * previous_ema
+    // Using alpha = 2/(N+1) where N=1000 for EMA over ~1000 samples
+    double alpha = 2.0 / (LOG_WINDOW + 1);
+    if (!ema_initialized) {
+      mshr_load_ema = mshr_load;
+      ema_initialized = true;
+    } else {
+      mshr_load_ema = alpha * mshr_load + (1.0 - alpha) * mshr_load_ema;
     }
 
-    logAutotuneEwmaSnapshot("periodic");
-    logAutotuneConfidenceSnapshot("periodic");
-
-    mshr_counter++;
-    // Histogram logging - log histogram counts
-    // NOTE: Log this less frequently as the log can get very large
-    if ((mshr_counter % 10) == 0) {
-      if (mshr_load_histogram_log && mshr_load_histogram_log->stream()) {
-        for (int i = 0; i <= 100; i++) {
-          if (mshr_load_histogram[i] > 0) {
-            *mshr_load_histogram_log->stream() << i << "," <<
-                mshr_load_histogram[i] << std::endl;
-          }
-        }
-        // Add separator between logging windows
-        *mshr_load_histogram_log->stream() << "---," <<
-            m_controller->curCycle() << std::endl;
+    // Log every 1000th event
+    if (event_counter % LOG_WINDOW == 0) {
+      // Sampled logging - log the current instantaneous MSHR load
+      if (mshr_load_sampled_log && mshr_load_sampled_log->stream()) {
+        *mshr_load_sampled_log->stream() << m_controller->curCycle() << ","
+            << mshr_load << std::endl;
       }
-      // Flush the prefetch_log as it doesn't flush per line
-      if (prefetch_log && prefetch_log->stream())
-        prefetch_log->stream()->flush();
+
+      // EMA logging - log the exponential moving average MSHR load
+      if (mshr_load_averaged_log && mshr_load_averaged_log->stream()) {
+        *mshr_load_averaged_log->stream() << m_controller->curCycle() << ","
+            << static_cast<uint64_t>(std::round(mshr_load_ema)) << std::endl;
+      }
+
+      logAutotuneEwmaSnapshot("periodic");
+      logAutotuneConfidenceSnapshot("periodic");
+
+      mshr_counter++;
+      // Histogram logging - log histogram counts
+      // NOTE: Log this less frequently as the log can get very large
+      if ((mshr_counter % 10) == 0) {
+        if (mshr_load_histogram_log && mshr_load_histogram_log->stream()) {
+          for (int i = 0; i <= 100; i++) {
+            if (mshr_load_histogram[i] > 0) {
+              *mshr_load_histogram_log->stream() << i << "," <<
+                  mshr_load_histogram[i] << std::endl;
+            }
+          }
+          // Add separator between logging windows
+          *mshr_load_histogram_log->stream() << "---," <<
+              m_controller->curCycle() << std::endl;
+        }
+        // Flush the prefetch_log as it doesn't flush per line
+        if (prefetch_log && prefetch_log->stream())
+          prefetch_log->stream()->flush();
+      }
     }
   }
 
